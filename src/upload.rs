@@ -39,6 +39,8 @@ fn agent(url: &str, dns: &Dns) -> Result<Agent> {
     let config = Agent::config_builder()
         .timeout_global(Some(UPLOAD_TIMEOUT))
         .http_status_as_error(false)
+        // Addresses are pinned to the gateway host, so a redirect elsewhere would reach the wrong server.
+        .max_redirects(0)
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
             "/",

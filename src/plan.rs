@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 
 use anyhow::{Context, Result, bail};
@@ -61,9 +60,9 @@ fn has_route(addr: IpAddr) -> bool {
         .is_ok()
 }
 
-/// First IPv4 and first IPv6 address of `target`.
+/// First IPv4 and first IPv6 address of `target`, in the order the resolver returned them.
 fn resolve(target: &str, dns: &Dns) -> Result<Vec<IpAddr>> {
-    let addrs: BTreeSet<IpAddr> = dns.resolve(target)?.into_iter().collect();
+    let addrs = dns.resolve(target)?;
     let v4 = addrs.iter().find(|addr| addr.is_ipv4()).copied();
     let v6 = addrs.iter().find(|addr| addr.is_ipv6()).copied();
     Ok([v4, v6].into_iter().flatten().collect())
@@ -80,7 +79,7 @@ fn protocols(
         ProtocolChoice::Icmp => (Protocol::Icmp, None),
         ProtocolChoice::Udp => (Protocol::Udp, None),
         ProtocolChoice::Tcp if unprivileged => {
-            bail!("TCP tracing needs raw sockets; run as root or drop --unprivileged")
+            bail!("TCP tracing needs raw sockets; run xmtr as root")
         }
         ProtocolChoice::Tcp => (Protocol::Tcp, None),
     })

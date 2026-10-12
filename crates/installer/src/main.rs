@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use xmtr_release::{TARGET, agent, exe_name, fetch_binary, latest_tag, releases_url, write_staged};
+use xmtr_release::{
+    TARGET, agent, ensure_writable, exe_name, fetch_binary, latest_tag, normalize_tag,
+    releases_url, write_staged,
+};
 
 const USAGE: &str = "\
 Install xmtr for this machine, then delete this installer.
@@ -86,16 +89,17 @@ fn on_path(dir: &Path) -> bool {
 fn install(options: &Options) -> Result<PathBuf> {
     let agent = agent(concat!("xmtr-installer/", env!("CARGO_PKG_VERSION")));
     let tag = match &options.version {
-        Some(tag) => tag.clone(),
+        Some(tag) => normalize_tag(tag),
         None => latest_tag(&agent)?,
     };
     let dir = match &options.dir {
         Some(dir) => dir.clone(),
         None => default_dir()?,
     };
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    ensure_writable(&dir)?;
     eprintln!("xmtr {tag} for {TARGET} from {}", releases_url());
     let binary = fetch_binary(&agent, &tag)?;
-    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let destination = dir.join(exe_name());
     let staged = write_staged(&destination, &binary)?;
     if let Err(error) = fs::rename(&staged, &destination) {
@@ -129,15 +133,24 @@ fn print_next_steps(destination: &Path) -> Result<()> {
                 dir.display()
             );
         }
-        if cfg!(target_os = "macos") || is_root() {
-            println!("Run:  xmtr 1.1.1.1 example.com");
+        // Under sudo the person who runs xmtr later is not root, so the hint keeps the sudo.
+        let sudo = env::var_os("SUDO_USER").is_some_and(|user| !user.is_empty());
+        let name = if on_path(dir) {
+            "xmtr".to_owned()
+        } else {
+            destination.display().to_string()
+        };
+        if cfg!(target_os = "macos") || (is_root() && !sudo) {
+            println!("Run:  {name} 1.1.1.1 example.com");
+        } else if is_root() {
+            println!("Run:  sudo {name} 1.1.1.1 example.com");
         } else if cfg!(target_os = "linux") {
             println!(
-                "Run with sudo, or allow raw sockets once:\n  sudo setcap cap_net_raw+ep {}",
+                "Run:  sudo {name} 1.1.1.1 example.com\nOr allow raw sockets once and run it as yourself:\n  sudo setcap cap_net_raw+ep {}",
                 destination.display()
             );
         } else {
-            println!("Run as root:  xmtr 1.1.1.1 example.com");
+            println!("Run as root:  sudo {name} 1.1.1.1 example.com");
         }
     }
     Ok(())

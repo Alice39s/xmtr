@@ -23,26 +23,39 @@ use crate::dns::Dns;
 use crate::runner::{Progress, Settings};
 
 const DEFAULT_PARALLEL: usize = 8;
+/// Width of the progress line; kept under 80 columns so it never wraps.
+const PROGRESS_WIDTH: usize = 78;
 
+/// One status line such as `tracing 3 | done 2/5 | reached 2 | 1.1.1.1 IPv4/ICMP r4`, rewritten in place
+/// with a carriage return, which every terminal understands.
 fn print_progress(progress: &[Mutex<Progress>]) {
-    let parts: Vec<String> = progress
+    let entries: Vec<Progress> = progress
         .iter()
         .filter_map(|entry| entry.lock().ok().map(|entry| entry.clone()))
-        .filter(|entry| !entry.label.is_empty())
-        .map(|entry| {
-            let state = if entry.done {
-                "done"
-            } else if entry.reached {
-                "reached"
-            } else {
-                "tracing"
-            };
-            format!("{} r{} h{} {state}", entry.label, entry.rounds, entry.hops)
-        })
         .collect();
+    let done = entries.iter().filter(|entry| entry.done).count();
+    let reached = entries.iter().filter(|entry| entry.reached).count();
+    let active: Vec<&Progress> = entries
+        .iter()
+        .filter(|entry| !entry.done && !entry.label.is_empty())
+        .collect();
+    let mut line = format!(
+        "tracing {} | done {done}/{} | reached {reached}",
+        active.len(),
+        entries.len()
+    );
+    if let Some(first) = active.first() {
+        line.push_str(&format!(" | {} r{}", first.label, first.rounds));
+    }
+    let line: String = line.chars().take(PROGRESS_WIDTH).collect();
     let mut stderr = std::io::stderr();
-    let _ = write!(stderr, "\r\x1b[2K{}", parts.join(" | "));
+    let _ = write!(stderr, "\r{line:<PROGRESS_WIDTH$}");
     let _ = stderr.flush();
+}
+
+/// True when no hop of the route answered a single probe.
+fn silent(route: &model::Route) -> bool {
+    route.hops.iter().all(|hop| hop.recv == 0)
 }
 
 fn run(cli: &Cli) -> Result<ExitCode> {
@@ -88,7 +101,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
                     print_progress(&progress);
                     thread::sleep(Duration::from_millis(250));
                 }
-                eprint!("\r\x1b[2K");
+                eprint!("\r{:PROGRESS_WIDTH$}\r", "");
             });
         }
         let outcomes = runner::run_all(&plan.jobs, parallel, &settings, &progress);
@@ -99,7 +112,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     let mut routes = Vec::new();
     for outcome in outcomes {
         match outcome.result {
-            Ok(route) if route.hops.is_empty() => {
+            Ok(route) if silent(&route) => {
                 eprintln!("error {}: no probe was answered", outcome.label);
             }
             Ok(route) => routes.push(route),
@@ -112,11 +125,19 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     routes.sort_by_key(|route| (route.target.clone(), route.family, !route.reached));
 
     if !cli.no_rdns {
-        dns.annotate(&mut routes);
+        let unanswered = dns.annotate(&mut routes);
+        if unanswered > 0 && !cli.quiet {
+            eprintln!("note: no reverse DNS or AS answer in time for {unanswered} addresses");
+        }
     }
+    // With --json the tables go to stderr so stdout holds only the JSON document.
     if !cli.quiet {
         for route in &routes {
-            println!("{}\n", output::render(route));
+            if cli.json {
+                eprintln!("{}\n", output::render(route));
+            } else {
+                println!("{}\n", output::render(route));
+            }
         }
     }
 
@@ -124,6 +145,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         schema: 1,
         client: model::Client::current(),
         share_origin: !cli.hide_origin,
+        pin: cli.pin.clone(),
         routes,
     };
     if cli.json {
@@ -137,10 +159,10 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             if cli.quiet {
                 println!("{}", accepted.url);
             } else {
-                println!(
-                    "trace-id {}  key {}\n{}",
-                    accepted.id, accepted.key, accepted.url
-                );
+                println!("trace-id {}\n{}", accepted.id, accepted.url);
+                if accepted.pin {
+                    println!("Readers also need the PIN you set.");
+                }
             }
             Ok(ExitCode::SUCCESS)
         }

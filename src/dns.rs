@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +21,8 @@ use crate::model::Route;
 
 const LOOKUP_BUDGET: Duration = Duration::from_secs(5);
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Hop addresses looked up at the same time, so one resolver is not flooded.
+const LOOKUP_CONCURRENCY: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
@@ -93,6 +95,14 @@ impl FromStr for DnsSpec {
             return Ok(Self::Auto);
         }
         if !value.contains("://") {
+            if let Ok(socket) = value.parse::<SocketAddr>() {
+                return Ok(Self::Server {
+                    transport: Transport::Udp,
+                    host: Host::Ip(socket.ip()),
+                    port: Some(socket.port()),
+                    path: None,
+                });
+            }
             return Ok(Self::Server {
                 transport: Transport::Udp,
                 host: parse_host(value),
@@ -327,30 +337,42 @@ impl Dns {
         self.system_targets
     }
 
-    /// Adds reverse DNS names and origin AS numbers to every hop address, waiting at most a few seconds.
-    pub fn annotate(&self, routes: &mut [Route]) {
+    /// Adds reverse DNS names and origin AS numbers to hop addresses, waiting at most a few seconds.
+    /// Private and other non-public addresses are only looked up in the system resolver, and only
+    /// for their names, so they are not sent to a public resolver. Returns how many addresses got no answer
+    /// in time.
+    pub fn annotate(&self, routes: &mut [Route]) -> usize {
         let mut addrs: Vec<IpAddr> = routes
             .iter()
             .flat_map(|route| route.hops.iter())
             .flat_map(|hop| hop.hosts.iter())
             .filter_map(|host| host.ip.parse().ok())
+            .filter(|addr| self.system_targets || is_public(*addr))
             .collect();
         addrs.sort_unstable();
         addrs.dedup();
+        let total = addrs.len();
 
         let mut names: HashMap<IpAddr, Names> = HashMap::new();
         self.runtime.block_on(async {
+            let mut pending = addrs.into_iter();
             let mut tasks = JoinSet::new();
-            for addr in addrs {
+            for addr in pending.by_ref().take(LOOKUP_CONCURRENCY) {
                 tasks.spawn(lookup_names(self.resolver.clone(), addr));
             }
             let _ = tokio::time::timeout(LOOKUP_BUDGET, async {
-                while let Some(Ok((addr, found))) = tasks.join_next().await {
-                    names.insert(addr, found);
+                while let Some(joined) = tasks.join_next().await {
+                    if let Ok((addr, found)) = joined {
+                        names.insert(addr, found);
+                    }
+                    if let Some(addr) = pending.next() {
+                        tasks.spawn(lookup_names(self.resolver.clone(), addr));
+                    }
                 }
             })
             .await;
         });
+        let answered = names.len();
 
         for host in routes
             .iter_mut()
@@ -366,6 +388,34 @@ impl Dns {
                 host.hostname.clone_from(&found.hostname);
                 host.asn = found.asn;
             }
+        }
+        total - answered
+    }
+}
+
+/// True for globally routable unicast addresses; AS lookups only make sense for these.
+fn is_public(addr: IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(ip) => {
+            let [a, b, ..] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || a >= 240
+                || (a == 100 && (64..128).contains(&b)))
+        }
+        IpAddr::V6(ip) => {
+            let first = ip.segments()[0];
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+                || (first == 0x2001 && ip.segments()[1] == 0x0db8))
         }
     }
 }
@@ -404,6 +454,9 @@ fn cymru_asn(text: &str) -> Option<u32> {
 async fn lookup_names(resolver: TokioResolver, addr: IpAddr) -> (IpAddr, Names) {
     let ptr = resolver.reverse_lookup(Name::from(addr));
     let asn = async {
+        if !is_public(addr) {
+            return None;
+        }
         match cymru_name(addr) {
             Ok(name) => resolver.txt_lookup(name).await.ok(),
             Err(_) => None,
@@ -523,5 +576,49 @@ mod tests {
         );
         assert_eq!(cymru_asn("13335 209242 | 1.1.1.0/24 | AU"), Some(13335));
         assert_eq!(cymru_asn("NA | 10.0.0.0/8"), None);
+    }
+
+    #[test]
+    fn parses_an_address_with_a_port() {
+        assert_eq!(
+            "192.0.2.53:5353".parse(),
+            Ok(server(
+                Transport::Udp,
+                Host::Ip([192, 0, 2, 53].into()),
+                Some(5353),
+                None
+            ))
+        );
+        assert_eq!(
+            "[2001:db8::53]:5353".parse(),
+            Ok(server(
+                Transport::Udp,
+                Host::Ip("2001:db8::53".parse().unwrap()),
+                Some(5353),
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn keeps_private_addresses_out_of_public_lookups() {
+        for private in [
+            "10.0.0.1",
+            "192.168.1.1",
+            "172.16.0.1",
+            "100.64.0.1",
+            "169.254.1.1",
+            "127.0.0.1",
+            "240.0.0.1",
+            "fd00::1",
+            "fe80::1",
+            "::1",
+            "2001:db8::1",
+        ] {
+            assert!(!is_public(private.parse().unwrap()), "{private}");
+        }
+        for public in ["1.1.1.1", "100.128.0.1", "2606:4700::1111"] {
+            assert!(is_public(public.parse().unwrap()), "{public}");
+        }
     }
 }

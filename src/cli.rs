@@ -44,12 +44,12 @@ pub struct Cli {
     #[arg(short = 'c', long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..))]
     pub max_rounds: u16,
 
-    /// Time limit per route.
-    #[arg(short = 't', long, default_value = "45s", value_parser = humantime::parse_duration)]
+    /// Time limit per route, at least 1s.
+    #[arg(short = 't', long, default_value = "45s", value_parser = duration_at_least_1s)]
     pub time_limit: Duration,
 
-    /// Minimum time between rounds.
-    #[arg(short = 'i', long, default_value = "1s", value_parser = humantime::parse_duration)]
+    /// Minimum time between rounds, such as `1s` or `500ms`; at least 100ms.
+    #[arg(short = 'i', long, default_value = "1s", value_parser = interval)]
     pub interval: Duration,
 
     /// Maximum TTL.
@@ -57,7 +57,7 @@ pub struct Cli {
     pub max_ttl: u8,
 
     /// Destination port for TCP probes.
-    #[arg(long, default_value_t = 443)]
+    #[arg(long, default_value_t = 443, value_parser = clap::value_parser!(u16).range(1..))]
     pub port: u16,
 
     /// Routes traced at the same time; defaults to the number of routes, at most 8.
@@ -82,15 +82,20 @@ pub struct Cli {
     #[arg(long)]
     pub no_upload: bool,
 
-    /// Do not attach this machine's public address as the route origin.
+    /// Ask the gateway not to store this machine's public address as the route origin. The first hops
+    /// are still uploaded and may show the network the trace started from.
     #[arg(long)]
     pub hide_origin: bool,
+
+    /// Protect the trace with a four-digit PIN (digits 0-8, no 4); readers enter it after opening the link.
+    #[arg(long, value_name = "PIN", value_parser = pin)]
+    pub pin: Option<String>,
 
     /// Gateway that stores uploaded traces.
     #[arg(long, env = "XMTR_API", default_value = DEFAULT_API)]
     pub api: String,
 
-    /// Print the upload payload as JSON on stdout.
+    /// Print the upload payload as JSON on stdout; the route tables go to stderr.
     #[arg(long)]
     pub json: bool,
 
@@ -113,7 +118,7 @@ pub enum SelfCommand {
         /// Install even when this version is already the latest.
         #[arg(long)]
         force: bool,
-        /// Release tag to install instead of the latest, such as `v0.2.0`.
+        /// Release tag to install instead of the latest, such as `v0.2.0` or `0.2.0`.
         #[arg(long, value_name = "TAG")]
         tag: Option<String>,
     },
@@ -127,4 +132,59 @@ pub enum ProtocolChoice {
     Icmp,
     Udp,
     Tcp,
+}
+
+fn duration_at_least(value: &str, min: Duration) -> Result<Duration, String> {
+    let duration = humantime::parse_duration(value)
+        .map_err(|error| format!("{error}; use a duration such as 45s, 500ms or 2m"))?;
+    if duration < min {
+        return Err(format!(
+            "must be at least {}",
+            humantime::format_duration(min)
+        ));
+    }
+    Ok(duration)
+}
+
+fn duration_at_least_1s(value: &str) -> Result<Duration, String> {
+    duration_at_least(value, Duration::from_secs(1))
+}
+
+fn interval(value: &str) -> Result<Duration, String> {
+    duration_at_least(value, Duration::from_millis(100))
+}
+
+fn pin(value: &str) -> Result<String, String> {
+    if value.len() == 4
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'3' | b'5'..=b'8'))
+    {
+        Ok(value.to_owned())
+    } else {
+        Err("PIN must be four digits from 0-8 without 4, such as 2580".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_pins_from_0_to_8_without_4() {
+        for good in ["0000", "2580", "8888", "1235"] {
+            assert_eq!(pin(good), Ok(good.to_owned()));
+        }
+        for bad in ["1234", "9000", "123", "12345", "12a3"] {
+            assert!(pin(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rejects_durations_below_the_minimum() {
+        assert_eq!(interval("500ms"), Ok(Duration::from_millis(500)));
+        assert!(interval("0s").is_err());
+        assert!(duration_at_least_1s("0s").is_err());
+        assert!(interval("0.5").is_err());
+    }
 }

@@ -2,15 +2,22 @@ use std::env;
 use std::fs;
 
 use anyhow::{Context, Result};
-use xmtr_release::{agent, fetch_binary, is_newer, latest_tag, write_staged};
+use xmtr_release::{
+    agent, ensure_writable, fetch_binary, is_newer, latest_tag, normalize_tag, write_staged,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const RIGHTS_HINT: &str = "run the update with the rights that installed it";
 
 /// Replaces the running binary with release `tag`, or with the latest release when it is newer.
 pub fn update(force: bool, tag: Option<&str>) -> Result<()> {
     let agent = agent(concat!("xmtr/", env!("CARGO_PKG_VERSION")));
+    let exe = env::current_exe().context("locating the running binary")?;
+    let dir = exe
+        .parent()
+        .context("the running binary has no directory")?;
     let tag = match tag {
-        Some(tag) => tag.to_owned(),
+        Some(tag) => normalize_tag(tag),
         None => {
             let latest = latest_tag(&agent)?;
             if !force && !is_newer(&latest, VERSION)? {
@@ -20,17 +27,12 @@ pub fn update(force: bool, tag: Option<&str>) -> Result<()> {
             latest
         }
     };
-    let exe = env::current_exe().context("locating the running binary")?;
+    ensure_writable(dir).with_context(|| format!("updating {}; {RIGHTS_HINT}", exe.display()))?;
     let binary = fetch_binary(&agent, &tag)?;
     let staged = write_staged(&exe, &binary)?;
     let replaced = self_replace::self_replace(&staged);
     let _ = fs::remove_file(&staged);
-    replaced.with_context(|| {
-        format!(
-            "replacing {}; run the update with the rights that installed it",
-            exe.display()
-        )
-    })?;
+    replaced.with_context(|| format!("replacing {}; {RIGHTS_HINT}", exe.display()))?;
     println!(
         "Updated {} from {VERSION} to {}",
         exe.display(),

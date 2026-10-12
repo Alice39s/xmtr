@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use trippy_core::{Builder, Port, PortDirection, PrivilegeMode, Protocol, State};
 
 use crate::convergence::Convergence;
@@ -68,6 +68,18 @@ fn job_label(job: &Job, protocol: Protocol) -> String {
     }
 }
 
+/// Rounds the tracer itself runs. trippy cannot be stopped from outside, so a tracer that outlives its
+/// route keeps probing until this many rounds; capping it at what fits in the time limit keeps such
+/// leftovers short.
+fn tracer_rounds(settings: &Settings) -> usize {
+    let interval = settings
+        .interval
+        .max(Duration::from_millis(100))
+        .as_secs_f64();
+    let fit = (settings.time_limit.as_secs_f64() / interval).ceil() as usize + 1;
+    settings.max_rounds.min(fit.max(1))
+}
+
 /// Every concurrent tracer gets its own ICMP identifier, UDP source port and sequence range,
 /// so replies are never attributed to the wrong route.
 fn build_tracer(
@@ -92,7 +104,7 @@ fn build_tracer(
         .trace_identifier(identifier)
         .port_direction(port_direction)
         .initial_sequence(33434 + (slot % 20) * SEQUENCE_BLOCK)
-        .max_rounds(Some(settings.max_rounds))
+        .max_rounds(Some(tracer_rounds(settings)))
         .max_ttl(settings.max_ttl)
         .min_round_duration(settings.interval)
         .max_round_duration(settings.interval.max(Duration::from_millis(1000)))
@@ -175,7 +187,6 @@ fn route_from_state(
         destination: job.addr.to_string(),
         protocol: protocol_name(protocol),
         family: if job.addr.is_ipv4() { 4 } else { 6 },
-        source_addr: None,
         started_at: humantime::format_rfc3339_millis(started).to_string(),
         duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         rounds,
@@ -232,8 +243,7 @@ fn trace(
                     .map_err(|_| anyhow!("tracer thread panicked"))?
                     .map_err(|error| anyhow!("{error}"))?;
             }
-            // A tracer that is still running is left to the process exit: trippy has no stop signal,
-            // and its remaining rounds are bounded by `max_rounds`.
+            // A tracer that is still running ends on its own after `tracer_rounds` rounds.
             let state = tracer.snapshot();
             return Ok(route_from_state(
                 job,
@@ -280,8 +290,7 @@ pub fn run_all(
                                 done: false,
                             };
                         }
-                        let result = trace(job, current, slot, settings, &progress[index])
-                            .with_context(|| format!("tracing {label}"));
+                        let result = trace(job, current, slot, settings, &progress[index]);
                         let retry = first && matches!(&result, Ok(route) if !route.reached);
                         if let Ok(mut list) = outcomes.lock() {
                             list.push(Outcome { label, result });

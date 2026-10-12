@@ -1,7 +1,7 @@
 use std::fs;
 #[cfg(windows)]
 use std::io::Cursor;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -43,11 +43,23 @@ pub fn archive_name() -> String {
 }
 
 pub fn agent(user_agent: &str) -> Agent {
+    // Downloads go over HTTPS unless a mirror is explicitly configured with an http:// URL.
+    let https_only = !releases_url().starts_with("http://");
     Agent::config_builder()
         .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .https_only(https_only)
         .user_agent(user_agent)
         .build()
         .into()
+}
+
+/// Release tags carry a `v` prefix; `0.2.0` and `v0.2.0` name the same release.
+pub fn normalize_tag(tag: &str) -> String {
+    if tag.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("v{tag}")
+    } else {
+        tag.to_owned()
+    }
 }
 
 /// Tag of the newest release, read from the redirect of `<releases>/latest`.
@@ -166,17 +178,95 @@ pub fn fetch_binary(agent: &Agent, tag: &str) -> Result<Vec<u8>> {
     extract_binary(&fetch_verified(agent, tag, &archive_name())?)
 }
 
-/// Writes `bytes` to a new executable file next to `destination` and returns its path.
+/// Writes `bytes` to a new executable file next to `destination` and returns its path. The file name is
+/// unique and must not exist yet, the data is flushed to disk, and a partial file is removed on error.
 pub fn write_staged(destination: &Path, bytes: &[u8]) -> Result<PathBuf> {
-    let staged = destination.with_extension("new");
-    fs::write(&staged, bytes).with_context(|| format!("writing {}", staged.display()))?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    static STAGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let serial = STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staged =
+        destination.with_extension(format!("new-{}-{nanos:08x}-{serial}", std::process::id()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("marking {} executable", staged.display()))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o755);
+    }
+    let written = options.open(&staged).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = fs::remove_file(&staged);
+        return Err(error).with_context(|| format!("writing {}", staged.display()));
     }
     Ok(staged)
+}
+
+/// Fails early, before any download, when files cannot be created in `dir`.
+pub fn ensure_writable(dir: &Path) -> Result<()> {
+    let probe = write_staged(&dir.join(".xmtr-write-check"), &[])?;
+    fs::remove_file(&probe).with_context(|| format!("removing {}", probe.display()))
+}
+
+/// PATH entry lists, kept free of registry access so the add and remove rules can be tested anywhere.
+pub mod path_list {
+    /// Expands `%NAME%` references the way Windows does for REG_EXPAND_SZ values; unknown names stay as is.
+    pub fn expand(entry: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+        let mut out = String::new();
+        let mut rest = entry;
+        while let Some(start) = rest.find('%') {
+            let Some(len) = rest[start + 1..].find('%') else {
+                break;
+            };
+            let name = &rest[start + 1..start + 1 + len];
+            out.push_str(&rest[..start]);
+            match lookup(name) {
+                Some(value) if !name.is_empty() => out.push_str(&value),
+                _ => out.push_str(&rest[start..start + len + 2]),
+            }
+            rest = &rest[start + len + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn same_dir(entry: &str, dir: &str, lookup: &impl Fn(&str) -> Option<String>) -> bool {
+        expand(entry, lookup)
+            .trim_end_matches('\\')
+            .eq_ignore_ascii_case(dir.trim_end_matches('\\'))
+    }
+
+    /// `entries` plus `dir`, or `None` when an entry already names `dir`.
+    pub fn with_dir(
+        entries: &[&str],
+        dir: &str,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Option<Vec<String>> {
+        if entries.iter().any(|entry| same_dir(entry, dir, &lookup)) {
+            return None;
+        }
+        let mut updated: Vec<String> = entries.iter().map(|entry| (*entry).to_owned()).collect();
+        updated.push(dir.to_owned());
+        Some(updated)
+    }
+
+    /// `entries` without those naming `dir`, or `None` when none did.
+    pub fn without_dir(
+        entries: &[&str],
+        dir: &str,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Option<Vec<String>> {
+        let kept: Vec<String> = entries
+            .iter()
+            .filter(|entry| !same_dir(entry, dir, &lookup))
+            .map(|entry| (*entry).to_owned())
+            .collect();
+        (kept.len() != entries.len()).then_some(kept)
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +292,48 @@ mod tests {
         assert!(is_newer("v0.2.1", "0.2.0").unwrap());
         assert!(!is_newer("v0.2.0", "0.2.0").unwrap());
         assert!(!is_newer("v0.1.9", "0.2.0").unwrap());
+        assert_eq!(normalize_tag("0.2.0"), "v0.2.0");
+        assert_eq!(normalize_tag("v0.2.0"), "v0.2.0");
+    }
+
+    #[test]
+    fn edits_path_lists_with_expanded_entries() {
+        let lookup =
+            |name: &str| (name == "LOCALAPPDATA").then(|| r"C:\Users\a\AppData\Local".to_owned());
+        let dir = r"C:\Users\a\AppData\Local\Programs\xmtr";
+        assert_eq!(
+            path_list::expand(r"%LOCALAPPDATA%\Programs\xmtr", lookup),
+            dir
+        );
+        assert_eq!(
+            path_list::expand("%UNKNOWN%\\bin;50%", lookup),
+            "%UNKNOWN%\\bin;50%"
+        );
+        assert_eq!(
+            path_list::with_dir(&[r"%LOCALAPPDATA%\Programs\xmtr\"], dir, lookup),
+            None
+        );
+        assert_eq!(
+            path_list::with_dir(&[r"C:\bin"], dir, lookup),
+            Some(vec![r"C:\bin".to_owned(), dir.to_owned()])
+        );
+        assert_eq!(
+            path_list::without_dir(&[r"C:\bin", r"%LOCALAPPDATA%\programs\XMTR"], dir, lookup),
+            Some(vec![r"C:\bin".to_owned()])
+        );
+        assert_eq!(path_list::without_dir(&[r"C:\bin"], dir, lookup), None);
+    }
+
+    #[test]
+    fn stages_files_without_reusing_names() {
+        let dir = Path::new(env!("OUT_DIR")).join(format!("stage-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let first = write_staged(&dir.join("xmtr"), b"one").unwrap();
+        let second = write_staged(&dir.join("xmtr"), b"two").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(fs::read(&first).unwrap(), b"one");
+        ensure_writable(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

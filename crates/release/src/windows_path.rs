@@ -1,3 +1,4 @@
+use std::io;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -7,18 +8,23 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, RegType};
 
-fn same_dir(entry: &str, dir: &str) -> bool {
-    entry
-        .trim_end_matches('\\')
-        .eq_ignore_ascii_case(dir.trim_end_matches('\\'))
+use crate::path_list;
+
+fn lookup(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 /// Rewrites the user PATH in the registry when `edit` changes it, then tells running programs.
+/// A PATH that cannot be read is an error, so it is never replaced by a list that lost its entries.
 fn edit_user_path(edit: impl FnOnce(&[&str]) -> Option<Vec<String>>) -> Result<bool> {
     let environment = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
         .context("opening HKCU\\Environment")?;
-    let current: String = environment.get_value("Path").unwrap_or_default();
+    let current: String = match environment.get_value("Path") {
+        Ok(value) => value,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).context("reading the user PATH"),
+    };
     let entries: Vec<&str> = current
         .split(';')
         .filter(|entry| !entry.is_empty())
@@ -52,25 +58,11 @@ fn edit_user_path(edit: impl FnOnce(&[&str]) -> Option<Vec<String>>) -> Result<b
 /// Appends `dir` to the user PATH; returns false when it is already there.
 pub fn add_to_user_path(dir: &Path) -> Result<bool> {
     let dir = dir.to_string_lossy();
-    edit_user_path(|entries| {
-        if entries.iter().any(|entry| same_dir(entry, &dir)) {
-            return None;
-        }
-        let mut updated: Vec<String> = entries.iter().map(|entry| (*entry).to_owned()).collect();
-        updated.push(dir.into_owned());
-        Some(updated)
-    })
+    edit_user_path(|entries| path_list::with_dir(entries, &dir, lookup))
 }
 
 /// Removes `dir` from the user PATH; returns false when it was not there.
 pub fn remove_from_user_path(dir: &Path) -> Result<bool> {
     let dir = dir.to_string_lossy();
-    edit_user_path(|entries| {
-        let kept: Vec<String> = entries
-            .iter()
-            .filter(|entry| !same_dir(entry, &dir))
-            .map(|entry| (*entry).to_owned())
-            .collect();
-        (kept.len() != entries.len()).then_some(kept)
-    })
+    edit_user_path(|entries| path_list::without_dir(entries, &dir, lookup))
 }

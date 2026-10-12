@@ -7,6 +7,8 @@ pub struct Upload {
     pub schema: u8,
     pub client: Client,
     pub share_origin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
     pub routes: Vec<Route>,
 }
 
@@ -36,8 +38,6 @@ pub struct Route {
     pub destination: String,
     pub protocol: &'static str,
     pub family: u8,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_addr: Option<String>,
     pub started_at: String,
     pub duration_ms: u64,
     pub rounds: usize,
@@ -80,8 +80,9 @@ pub struct Host {
 /// Successful response of `POST /api/v1/traces`.
 #[derive(Debug, Deserialize)]
 pub struct UploadAccepted {
+    /// Snowflake ID and view key, such as `103115083070058496-nBjPEnny`.
     pub id: String,
-    pub key: String,
+    pub pin: bool,
     pub url: String,
 }
 
