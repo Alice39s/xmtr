@@ -31,7 +31,11 @@ pub fn update(force: bool, tag: Option<&str>) -> Result<()> {
             exe.display()
         )
     })?;
-    println!("Updated {} from {VERSION} to {tag}", exe.display());
+    println!(
+        "Updated {} from {VERSION} to {}",
+        exe.display(),
+        tag.trim_start_matches('v')
+    );
     if cfg!(target_os = "linux") {
         println!(
             "If you granted raw sockets with setcap, grant them again:\n  sudo setcap cap_net_raw+ep {}",
@@ -45,5 +49,23 @@ pub fn uninstall() -> Result<()> {
     let exe = env::current_exe().context("locating the running binary")?;
     self_replace::self_delete().with_context(|| format!("deleting {}", exe.display()))?;
     println!("Removed {}", exe.display());
+    #[cfg(windows)]
+    if let Some(dir) = exe.parent()
+        && only_holds(dir, &exe)?
+        && xmtr_release::windows_path::remove_from_user_path(dir)?
+    {
+        println!("Removed {} from your PATH", dir.display());
+    }
     Ok(())
+}
+
+/// True when `dir` contains nothing but `exe`, so its PATH entry served only xmtr.
+#[cfg(windows)]
+fn only_holds(dir: &std::path::Path, exe: &std::path::Path) -> Result<bool> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        if entry?.path() != exe {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

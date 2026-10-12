@@ -12,6 +12,9 @@ use ureq::Agent;
 /// Target triple this crate was compiled for; release assets are named after it.
 pub const TARGET: &str = env!("XMTR_TARGET");
 
+#[cfg(windows)]
+pub mod windows_path;
+
 const DEFAULT_RELEASES: &str = "https://github.com/Alice39s/xmtr/releases";
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);

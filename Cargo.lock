@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2230,20 +2230,18 @@ dependencies = [
 
 [[package]]
 name = "xmtr-installer"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "lexopt",
  "libc",
  "self-replace",
- "windows-sys 0.61.2",
- "winreg",
  "xmtr-release",
 ]
 
 [[package]]
 name = "xmtr-release"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2251,6 +2249,8 @@ dependencies = [
  "sha2",
  "tar",
  "ureq",
+ "windows-sys 0.61.2",
+ "winreg",
  "zip",
 ]
 

@@ -78,56 +78,9 @@ fn default_dir() -> Result<PathBuf> {
     }
 }
 
+#[cfg(unix)]
 fn on_path(dir: &Path) -> bool {
     env::var_os("PATH").is_some_and(|path| env::split_paths(&path).any(|entry| entry == dir))
-}
-
-/// Adds `dir` to the user's PATH in the registry and tells running programs about the change.
-#[cfg(windows)]
-fn add_to_user_path(dir: &Path) -> Result<bool> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
-    };
-    use winreg::RegKey;
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, RegType};
-
-    let environment = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
-        .context("opening HKCU\\Environment")?;
-    let current: String = environment.get_value("Path").unwrap_or_default();
-    let dir_text = dir.to_string_lossy();
-    if current.split(';').any(|entry| {
-        entry
-            .trim_end_matches('\\')
-            .eq_ignore_ascii_case(dir_text.trim_end_matches('\\'))
-    }) {
-        return Ok(false);
-    }
-    let updated = if current.is_empty() {
-        dir_text.into_owned()
-    } else {
-        format!("{};{dir_text}", current.trim_end_matches(';'))
-    };
-    let mut value = winreg::types::ToRegValue::to_reg_value(&updated);
-    value.vtype = RegType::REG_EXPAND_SZ;
-    environment
-        .set_raw_value("Path", &value)
-        .context("writing the user PATH")?;
-    let name: Vec<u16> = "Environment\0".encode_utf16().collect();
-    let mut result = 0usize;
-    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call; the result pointer is valid.
-    unsafe {
-        SendMessageTimeoutW(
-            HWND_BROADCAST,
-            WM_SETTINGCHANGE,
-            0,
-            name.as_ptr() as isize,
-            SMTO_ABORTIFHUNG,
-            5000,
-            &mut result,
-        );
-    }
-    Ok(true)
 }
 
 fn install(options: &Options) -> Result<PathBuf> {
@@ -159,7 +112,7 @@ fn print_next_steps(destination: &Path) -> Result<()> {
     let dir = destination.parent().unwrap_or(destination);
     #[cfg(windows)]
     {
-        if !on_path(dir) && add_to_user_path(dir)? {
+        if xmtr_release::windows_path::add_to_user_path(dir)? {
             println!(
                 "Added {} to your PATH; open a new terminal to use it.",
                 dir.display()
@@ -176,9 +129,9 @@ fn print_next_steps(destination: &Path) -> Result<()> {
                 dir.display()
             );
         }
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") || is_root() {
             println!("Run:  xmtr 1.1.1.1 example.com");
-        } else if cfg!(target_os = "linux") && !is_root() {
+        } else if cfg!(target_os = "linux") {
             println!(
                 "Run with sudo, or allow raw sockets once:\n  sudo setcap cap_net_raw+ep {}",
                 destination.display()
