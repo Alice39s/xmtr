@@ -19,8 +19,10 @@ xmtr prints each route as a table, then a trace ID and a link that opens the rou
 **macOS, Linux, FreeBSD, Termux**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | sudo sh
 ```
+
+With `sudo` the binary goes to `/usr/local/bin`, where `sudo xmtr` finds it. Without `sudo` it goes to `~/.local/bin`; on Linux, grant raw sockets once with `setcap` (see [Privileges](#privileges)) and run it as your user. On Termux, leave out `sudo`.
 
 **Windows (PowerShell)**
 
