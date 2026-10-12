@@ -6,7 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+homepage.workspace = true
+readme = "README.md"
+include = ["src/**", "build.rs", "README.md"]
 
 [dependencies]
 anyhow.workspace = true

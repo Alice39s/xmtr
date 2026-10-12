@@ -24,12 +24,25 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      - run: shellcheck install.sh scripts/package.sh
+      - run: shellcheck install.sh scripts/package.sh scripts/package-managers.sh
+      - name: The xmtr-release dependency matches the workspace version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "xmtr") | .version')"
+          required="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "xmtr") | .dependencies[] | select(.name == "xmtr-release") | .req')"
+          [ "$required" = "^$version" ] || { echo "xmtr-release is required as $required, expected ^$version"; exit 1; }
       - name: Tag matches the crate version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "xmtr") | .version')"
           [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME does not match version $version"; exit 1; }
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - run: nix build --print-build-logs .#xmtr
+      - run: ./result/bin/xmtr --version
 
   windows:
     runs-on: windows-latest
@@ -141,7 +154,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, zigbuild, cross, android]
+    needs: [windows, nix, zigbuild, cross, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -156,10 +169,133 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/*
+      # Releases are immutable once published, so every file is attached to a draft first.
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease --latest=false" ;; esac
           # shellcheck disable=SC2086
-          gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --generate-notes $prerelease
+          gh release create "${GITHUB_REF_NAME}" --draft --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --generate-notes $prerelease
+          gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}"
+          gh release edit "${GITHUB_REF_NAME}" --draft=false --repo "${GITHUB_REPOSITORY}"
+
+  crates:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for crate in xmtr-release xmtr; do
+            status="$(curl -s -o /dev/null -w '%{http_code}' -A 'xmtr release workflow (xmtr.opensource@xmsl.dev)' "https://crates.io/api/v1/crates/${crate}/${version}")"
+            if [ "$status" = 200 ]; then
+              echo "${crate} ${version} is already on crates.io"
+            else
+              cargo publish --locked --package "$crate"
+            fi
+          done
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --dir dist --repo "${GITHUB_REPOSITORY}"
+      - run: scripts/package-managers.sh "${GITHUB_REF_NAME}" dist/SHA256SUMS packages
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.HOMEBREW_TAP_KEY }}
+      - run: |
+          git clone --depth 1 git@github.com:Alice39s/homebrew-tap.git tap
+          mkdir -p tap/Formula
+          cp packages/homebrew/Formula/xmtr.rb tap/Formula/xmtr.rb
+          cd tap
+          git config user.name Alice39s
+          git config user.email xmtr.opensource@xmsl.dev
+          git add Formula/xmtr.rb
+          git diff --cached --quiet || git commit -m "xmtr ${GITHUB_REF_NAME#v}"
+          git push origin HEAD:main
+
+  scoop:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --dir dist --repo "${GITHUB_REPOSITORY}"
+      - run: scripts/package-managers.sh "${GITHUB_REF_NAME}" dist/SHA256SUMS packages
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SCOOP_BUCKET_KEY }}
+      - run: |
+          git clone --depth 1 git@github.com:Alice39s/scoop-bucket.git bucket
+          mkdir -p bucket/bucket
+          cp packages/scoop/bucket/xmtr.json bucket/bucket/xmtr.json
+          cd bucket
+          git config user.name Alice39s
+          git config user.email xmtr.opensource@xmsl.dev
+          git add bucket/xmtr.json
+          git diff --cached --quiet || git commit -m "xmtr ${GITHUB_REF_NAME#v}"
+          git push origin HEAD:main
+
+  aur:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --dir dist --repo "${GITHUB_REPOSITORY}"
+      - run: scripts/package-managers.sh "${GITHUB_REF_NAME}" dist/SHA256SUMS packages
+      # Builds the package once in Arch Linux to check the sources and checksums, and writes .SRCINFO.
+      - run: |
+          docker run --rm -v "$PWD/packages/aur:/pkg" archlinux:latest bash -euc '
+            pacman -Syu --noconfirm --needed base-devel >/dev/null
+            useradd -m builder
+            chown -R builder /pkg
+            su builder -c "cd /pkg && makepkg --printsrcinfo > .SRCINFO && makepkg -f --noconfirm"
+            rm -rf /pkg/src /pkg/pkg /pkg/*.tar.gz /pkg/*.pkg.tar.zst
+          '
+          cat packages/aur/.SRCINFO
+      - if: vars.AUR_ENABLED == 'true'
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_KEY }}
+      - if: vars.AUR_ENABLED == 'true'
+        run: |
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          git clone ssh://aur@aur.archlinux.org/xmtr-bin.git aur
+          cp packages/aur/PKGBUILD packages/aur/.SRCINFO aur/
+          cd aur
+          git config user.name Alice39s
+          git config user.email xmtr.opensource@xmsl.dev
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet || git commit -m "xmtr-bin ${GITHUB_REF_NAME#v}"
+          git push origin HEAD:master
+
+  winget:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      # The action updates an existing package, so it runs once the first version is in winget-pkgs.
+      - id: listed
+        run: |
+          status="$(curl -s -o /dev/null -w '%{http_code}' https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/Alice39s/xmtr)"
+          echo "listed=$([ "$status" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.listed.outputs.listed == 'true'
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Alice39s.xmtr
+          installers-regex: '^xmtr-.*-windows-.*\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}

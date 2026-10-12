@@ -3,16 +3,18 @@ members = [".", "crates/release", "crates/installer"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alice39s/xmtr"
+homepage = "https://xmsl.dev/ipmap"
 
 [workspace.dependencies]
 anyhow = "1"
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
-xmtr-release = { path = "crates/release" }
+# The version must match workspace.package.version; the release workflow checks it.
+xmtr-release = { path = "crates/release", version = "0.2.3" }
 
 [package]
 name = "xmtr"
@@ -22,8 +24,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 readme = "README.md"
-publish = false
+keywords = ["traceroute", "mtr", "network", "trippy", "geolocation"]
+categories = ["command-line-utilities", "network-programming"]
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+# cargo binstall downloads the release archive instead of building from source.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/xmtr-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-gnu]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.i686-pc-windows-gnu]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-gnullvm]
+pkg-fmt = "zip"
 
 [dependencies]
 anyhow.workspace = true

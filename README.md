@@ -94,6 +94,18 @@ xmtr self update        # install the latest release over this binary
 xmtr self uninstall     # delete this binary
 ```
 
+**Package managers**
+
+| | Manager | Command |
+| :-: | --- | --- |
+| <img src=".github/assets/homebrew.svg" width="20" alt=""> | Homebrew (macOS, Linux) | `brew install alice39s/tap/xmtr` |
+| <img src=".github/assets/scoop.png" width="20" alt=""> | Scoop (Windows) | `scoop bucket add alice39s https://github.com/Alice39s/scoop-bucket` then `scoop install alice39s/xmtr` |
+| <img src=".github/assets/windows.svg" width="20" alt=""> | WinGet (Windows) | `winget install Alice39s.xmtr` |
+| <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/rust-dark.svg"><img src=".github/assets/rust.svg" width="20" alt=""></picture> | Cargo | `cargo binstall xmtr` for the release binary, or `cargo install xmtr` to build it |
+| <img src=".github/assets/nixos.svg" width="20" alt=""> | Nix | `nix run github:Alice39s/xmtr -- 1.1.1.1`, or `nix profile install github:Alice39s/xmtr` |
+
+The release workflow updates the Homebrew formula, the Scoop manifest and the crates on every release and opens the WinGet pull request; the Nix flake builds the checked-out source. Update packages installed this way with their manager rather than `xmtr self update`.
+
 ## Platforms
 
 All builds are cross-compiled on Linux.
@@ -185,7 +197,7 @@ Usage: xmtr [OPTIONS] <TARGET>...
 cargo build --release --workspace
 ```
 
-The workspace builds `xmtr` and `xmtr-installer`. Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml`.
+The workspace builds `xmtr` and `xmtr-installer`. `nix build` builds `xmtr` from the flake. Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml`.
 
 ## License
 
