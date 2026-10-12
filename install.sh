@@ -1,15 +1,22 @@
 #!/bin/sh
 # Downloads the xmtr installer for this machine, verifies it and runs it.
-#   curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | sh -s -- --dir /opt/bin
+#   curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash -s -- --dir ~/bin
+# Without --dir or XMTR_INSTALL_DIR, a non-root user installs into /usr/local/bin through sudo, so that
+# `sudo xmtr` finds the binary; without sudo the installer picks ~/.local/bin.
+# The whole script is one function called on the last line, so a cut-off download runs nothing.
 set -eu
-
-releases="${XMTR_RELEASES:-https://github.com/Alice39s/xmtr/releases}"
-releases="${releases%/}"
 
 fail() {
   printf 'xmtr install: %s\n' "$*" >&2
   exit 1
+}
+
+# Architectures built only against glibc refuse to start on musl systems such as Alpine.
+require_glibc() {
+  if ls /lib/ld-musl-* >/dev/null 2>&1; then
+    fail "$1 builds need glibc; this system uses musl"
+  fi
 }
 
 detect_target() {
@@ -35,10 +42,10 @@ detect_target() {
         armv6*) echo arm-unknown-linux-musleabihf ;;
         riscv64) echo riscv64gc-unknown-linux-musl ;;
         loongarch64) echo loongarch64-unknown-linux-musl ;;
-        ppc64le) echo powerpc64le-unknown-linux-gnu ;;
-        ppc64) echo powerpc64-unknown-linux-gnu ;;
-        s390x) echo s390x-unknown-linux-gnu ;;
-        sparc64) echo sparc64-unknown-linux-gnu ;;
+        ppc64le) require_glibc "$arch" && echo powerpc64le-unknown-linux-gnu ;;
+        ppc64) require_glibc "$arch" && echo powerpc64-unknown-linux-gnu ;;
+        s390x) require_glibc "$arch" && echo s390x-unknown-linux-gnu ;;
+        sparc64) require_glibc "$arch" && echo sparc64-unknown-linux-gnu ;;
         *) fail "unsupported Linux architecture: $arch" ;;
       esac
       ;;
@@ -68,10 +75,21 @@ detect_target() {
 }
 
 download() {
+  case "$1" in
+    https://*) ;;
+    http://*) printf 'xmtr install: downloading over plain HTTP from %s\n' "$1" >&2 ;;
+    *) fail "not an http(s) URL: $1" ;;
+  esac
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 2 -o "$2" "$1"
+    case "$1" in
+      https://*) curl --proto '=https' --tlsv1.2 -fsSL --retry 2 -o "$2" "$1" ;;
+      *) curl -fsSL --retry 2 -o "$2" "$1" ;;
+    esac
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
+    case "$1" in
+      https://*) wget -q --https-only -O "$2" "$1" ;;
+      *) wget -q -O "$2" "$1" ;;
+    esac
   else
     fail "curl or wget is required"
   fi
@@ -91,23 +109,77 @@ sha256_of() {
   fi
 }
 
-target="$(detect_target)"
-case "$target" in
-  *windows*) installer="xmtr-installer-$target.exe" ;;
-  *) installer="xmtr-installer-$target" ;;
-esac
+has_dir_option() {
+  for arg in "$@"; do
+    case "$arg" in
+      --dir | --dir=*) return 0 ;;
+    esac
+  done
+  return 1
+}
 
-tmp="$(mktemp -d 2>/dev/null || mktemp -d -t xmtr)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
+# True when sudo can run without asking, or can ask on the terminal even though stdin is this script.
+can_sudo() {
+  command -v sudo >/dev/null 2>&1 || return 1
+  sudo -n true 2>/dev/null && return 0
+  (: </dev/tty) 2>/dev/null
+}
 
-printf 'Downloading %s\n' "$installer" >&2
-download "$releases/latest/download/SHA256SUMS" "$tmp/SHA256SUMS"
-download "$releases/latest/download/$installer" "$tmp/$installer"
+run_installer() {
+  bin="$1"
+  shift
+  case "$target" in
+    *android* | *windows*) "$bin" "$@"; return ;;
+  esac
+  if [ "$(id -u)" = 0 ] || [ -n "${XMTR_INSTALL_DIR:-}" ] || has_dir_option "$@"; then
+    "$bin" "$@"
+  elif [ -w /usr/local/bin ]; then
+    "$bin" --dir /usr/local/bin "$@"
+  elif can_sudo; then
+    printf 'Installing into /usr/local/bin with sudo (set XMTR_INSTALL_DIR to pick another directory)\n' >&2
+    # sudo resets the environment; the mirror and proxy settings are passed on through env.
+    sudo env XMTR_RELEASES="$releases" \
+      ${HTTPS_PROXY:+"HTTPS_PROXY=$HTTPS_PROXY"} ${https_proxy:+"https_proxy=$https_proxy"} \
+      "$bin" --dir /usr/local/bin "$@"
+  else
+    "$bin" "$@"
+  fi
+}
 
-expected="$(awk -v file="$installer" '$2 == file || $2 == "*" file { print $1 }' "$tmp/SHA256SUMS")"
-[ -n "$expected" ] || fail "SHA256SUMS has no entry for $installer"
-actual="$(sha256_of "$tmp/$installer")"
-[ "$expected" = "$actual" ] || fail "checksum mismatch for $installer"
+main() {
+  releases="${XMTR_RELEASES:-https://github.com/Alice39s/xmtr/releases}"
+  releases="${releases%/}"
+  target="$(detect_target)"
+  case "$target" in
+    *windows*) installer="xmtr-installer-$target.exe" ;;
+    *) installer="xmtr-installer-$target" ;;
+  esac
 
-chmod +x "$tmp/$installer"
-"$tmp/$installer" "$@"
+  tmp="$(mktemp -d 2>/dev/null || mktemp -d -t xmtr)"
+  home_tmp=""
+  trap 'rm -rf "$tmp" ${home_tmp:+"$home_tmp"}' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  printf 'Downloading %s\n' "$installer" >&2
+  download "$releases/latest/download/SHA256SUMS" "$tmp/SHA256SUMS"
+  download "$releases/latest/download/$installer" "$tmp/$installer"
+
+  expected="$(awk -v file="$installer" '$2 == file || $2 == "*" file { print $1 }' "$tmp/SHA256SUMS")"
+  [ -n "$expected" ] || fail "SHA256SUMS has no entry for $installer"
+  actual="$(sha256_of "$tmp/$installer")"
+  [ "$expected" = "$actual" ] || fail "checksum mismatch for $installer"
+  chmod +x "$tmp/$installer"
+
+  bin="$tmp/$installer"
+  # A temporary directory mounted noexec cannot run the installer; retry from the home directory.
+  if ! "$bin" --help >/dev/null 2>&1; then
+    home_tmp="$(mktemp -d "${HOME:-.}/.xmtr-install.XXXXXX")"
+    cp "$bin" "$home_tmp/$installer"
+    bin="$home_tmp/$installer"
+    "$bin" --help >/dev/null 2>&1 || fail "cannot run $installer from $tmp or $home_tmp"
+  fi
+  run_installer "$bin" "$@"
+}
+
+main "$@"
