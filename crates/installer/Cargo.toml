@@ -1,0 +1,22 @@
+[package]
+name = "xmtr-installer"
+description = "Downloads the xmtr release for this machine, installs it and deletes itself"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+lexopt = "0.3"
+self-replace = "1.5"
+xmtr-release.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
