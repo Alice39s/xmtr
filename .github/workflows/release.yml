@@ -665,3 +665,45 @@ jobs:
           $package = Get-ChildItem packages/*.nupkg
           choco push $package.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+  # Installs the published release through each channel on each hosted OS and CPU. Chocolatey and
+  # WinGet are left out: their new versions wait for review.
+  verify:
+    name: verify ${{ matrix.os }}
+    needs: [crates, homebrew, scoop, npm, pypi, pages, docker-publish]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, channels: install-sh npm pypi cargo-binstall brew apt dnf apk docker }
+          - { os: ubuntu-24.04-arm, channels: install-sh npm pypi cargo-binstall apt dnf apk docker }
+          - { os: macos-latest, channels: install-sh npm pypi cargo-binstall brew }
+          - { os: macos-15-intel, channels: install-sh npm pypi cargo-binstall brew }
+          - { os: windows-latest, channels: install-ps1 scoop npm pypi }
+          - { os: windows-11-arm, channels: install-ps1 scoop npm pypi }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - if: runner.os != 'Windows'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - if: matrix.os == 'ubuntu-latest'
+        run: echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Hosted runners run as Administrator, which the Scoop installer refuses without -RunAsAdmin.
+          Invoke-Expression "& {$(Invoke-RestMethod https://get.scoop.sh)} -RunAsAdmin"
+          Join-Path $HOME 'scoop\shims' | Add-Content -LiteralPath $env:GITHUB_PATH
+      - if: runner.os != 'Windows'
+        run: scripts/verify-release.sh "${GITHUB_REF_NAME#v}" ${{ matrix.channels }}
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-release.ps1 $env:GITHUB_REF_NAME.TrimStart('v') ${{ matrix.channels }}
