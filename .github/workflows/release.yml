@@ -199,7 +199,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          npm install --global "packages/npm/platforms/xmtr-linux-x64-${VERSION}.tgz" "packages/npm/xmtr-${VERSION}.tgz"
+          npm install --global "packages/npm/platforms/xmtr-linux-x64-${VERSION}.tgz" "packages/npm/xmtr-cli-${VERSION}.tgz"
           xmtr --version
           twine check packages/wheels/*.whl
           python -m venv "$RUNNER_TEMP/venv"
@@ -440,13 +440,13 @@ jobs:
         with:
           name: packages-npm
           path: npm
-      # Trusted publishing signs in through OIDC. The platform packages go first, so the xmtr package
+      # Trusted publishing signs in through OIDC. The platform packages go first, so @xmtr/cli
       # never points at a version that is missing.
       - run: |
           version="${GITHUB_REF_NAME#v}"
           tag=latest
           case "$version" in *-*) tag=next ;; esac
-          for tarball in npm/platforms/*.tgz "npm/xmtr-${version}.tgz"; do
+          for tarball in npm/platforms/*.tgz "npm/xmtr-cli-${version}.tgz"; do
             name="$(tar -xzOf "$tarball" package/package.json | jq -r .name)"
             if npm view "${name}@${version}" version >/dev/null 2>&1; then
               echo "${name} ${version} is already on npm"

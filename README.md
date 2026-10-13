@@ -102,7 +102,7 @@ xmtr self uninstall     # delete this binary
 | <img src=".github/assets/scoop.png" width="20" alt=""> | Scoop (Windows) | `scoop bucket add alice39s https://github.com/Alice39s/scoop-bucket` then `scoop install alice39s/xmtr` |
 | <img src=".github/assets/windows.svg" width="20" alt=""> | WinGet (Windows) | `winget install Alice39s.xmtr` |
 | <img src=".github/assets/chocolatey.svg" width="20" alt=""> | Chocolatey (Windows) | `choco install xmtr` |
-| <img src=".github/assets/npm.svg" width="20" alt=""> | npm | `npm install --global xmtr`, or `npx xmtr 1.1.1.1` |
+| <img src=".github/assets/npm.svg" width="20" alt=""> | npm | `npm install --global @xmtr/cli`, or `npx @xmtr/cli 1.1.1.1` |
 | <img src=".github/assets/pypi.svg" width="20" alt=""> | PyPI | `uv tool install xmtr`, `pipx install xmtr` or `pip install xmtr` |
 | <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/rust-dark.svg"><img src=".github/assets/rust.svg" width="20" alt=""></picture> | Cargo | `cargo binstall xmtr` for the release binary, or `cargo install xmtr` to build it |
 | <img src=".github/assets/mise.svg" width="20" alt=""> | mise | `mise use --global github:Alice39s/xmtr` |

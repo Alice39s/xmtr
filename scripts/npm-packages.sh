@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Builds the npm packages from the release archives: one @xmtr/<platform> package per binary and the
-# xmtr package, whose launcher runs the binary that matches the platform.
+# Builds the npm packages from the release archives: one @xmtr/<platform> package per binary and
+# @xmtr/cli, whose launcher runs the binary that matches the platform.
 # Usage: scripts/npm-packages.sh <version> <archives-dir> <out-dir>
-# Writes <out-dir>/platforms/*.tgz, which must be published before <out-dir>/xmtr-<version>.tgz.
+# Writes <out-dir>/platforms/*.tgz, which must be published before <out-dir>/xmtr-cli-<version>.tgz.
 set -euo pipefail
 version="$1"
 archives="$(cd "$2" && pwd)"
@@ -62,7 +62,7 @@ for entry in "${platforms[@]}"; do
   fi
   chmod 755 "$dir/$binary"
   cp "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$dir/"
-  printf "# %s\n\nThe %s binary of [xmtr](https://www.npmjs.com/package/xmtr). Install \`xmtr\`, which picks this package on %s.\n" \
+  printf "# %s\n\nThe %s binary of [xmtr](https://www.npmjs.com/package/@xmtr/cli). Install \`@xmtr/cli\`, which picks this package on %s.\n" \
     "$name" "$platform" "$platform" > "$dir/README.md"
   common | jq --arg name "$name" --arg os "$os" --arg cpu "$cpu" --arg binary "$binary" --arg platform "$platform" \
     '{name: $name, description: "The \($platform) binary of xmtr"} + . + {
@@ -72,13 +72,13 @@ for entry in "${platforms[@]}"; do
   optional="$(jq -c --arg name "$name" --arg version "$version" '. + {($name): $version}' <<<"$optional")"
 done
 
-main="$out/src/xmtr"
+main="$out/src/cli"
 mkdir -p "$main/bin"
 cp "$root/packaging/npm/xmtr.js" "$main/bin/xmtr.js"
 chmod 755 "$main/bin/xmtr.js"
 cp "$root/packaging/README.md" "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$main/"
 common | jq --arg description "$description" --argjson optional "$optional" \
-  '{name: "xmtr", description: $description} + . + {
+  '{name: "@xmtr/cli", description: $description} + . + {
     keywords: ["traceroute", "mtr", "network", "cli", "geolocation"],
     bin: { xmtr: "bin/xmtr.js" },
     files: ["bin", "README.md", "LICENSE-MIT", "LICENSE-APACHE"],
