@@ -16,7 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use crate::cli::{Cli, Command, SelfCommand};
 use crate::dns::Dns;
@@ -174,6 +174,17 @@ fn run(cli: &Cli) -> Result<ExitCode> {
 }
 
 fn main() -> ExitCode {
+    // Package managers check a command-line tool by starting it without arguments, so a bare `xmtr`
+    // prints the help and succeeds.
+    if std::env::args_os().len() == 1 {
+        return match Cli::command().print_help() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let cli = Cli::parse();
     let result = match &cli.command {
         Some(Command::Manage(SelfCommand::Update { force, tag })) => {
