@@ -79,37 +79,46 @@ class Xmtr < Formula
 end
 EOF
 
+# Scoop's bin/formatjson.ps1 layout: four-space indent, every object on its own lines.
 cat > "$out/scoop/bucket/xmtr.json" <<EOF
 {
-  "version": "${version}",
-  "description": "${description}",
-  "homepage": "${repo}",
-  "license": "MIT|Apache-2.0",
-  "notes": "Run xmtr from an Administrator terminal. Update it with scoop update rather than xmtr self update.",
-  "architecture": {
-    "64bit": {
-      "url": "${download}/xmtr-x86_64-pc-windows-gnu.zip",
-      "hash": "${win_x64}"
-    },
-    "32bit": {
-      "url": "${download}/xmtr-i686-pc-windows-gnu.zip",
-      "hash": "${win_i686}"
-    },
-    "arm64": {
-      "url": "${download}/xmtr-aarch64-pc-windows-gnullvm.zip",
-      "hash": "${win_arm64}"
-    }
-  },
-  "bin": "xmtr.exe",
-  "checkver": "github",
-  "autoupdate": {
+    "version": "${version}",
+    "description": "${description}",
+    "homepage": "${repo}",
+    "license": "MIT|Apache-2.0",
+    "notes": "Run xmtr from an Administrator terminal. Update it with scoop update rather than xmtr self update.",
     "architecture": {
-      "64bit": { "url": "${repo}/releases/download/v\$version/xmtr-x86_64-pc-windows-gnu.zip" },
-      "32bit": { "url": "${repo}/releases/download/v\$version/xmtr-i686-pc-windows-gnu.zip" },
-      "arm64": { "url": "${repo}/releases/download/v\$version/xmtr-aarch64-pc-windows-gnullvm.zip" }
+        "64bit": {
+            "url": "${download}/xmtr-x86_64-pc-windows-gnu.zip",
+            "hash": "${win_x64}"
+        },
+        "32bit": {
+            "url": "${download}/xmtr-i686-pc-windows-gnu.zip",
+            "hash": "${win_i686}"
+        },
+        "arm64": {
+            "url": "${download}/xmtr-aarch64-pc-windows-gnullvm.zip",
+            "hash": "${win_arm64}"
+        }
     },
-    "hash": { "url": "\$baseurl/SHA256SUMS" }
-  }
+    "bin": "xmtr.exe",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "${repo}/releases/download/v\$version/xmtr-x86_64-pc-windows-gnu.zip"
+            },
+            "32bit": {
+                "url": "${repo}/releases/download/v\$version/xmtr-i686-pc-windows-gnu.zip"
+            },
+            "arm64": {
+                "url": "${repo}/releases/download/v\$version/xmtr-aarch64-pc-windows-gnullvm.zip"
+            }
+        },
+        "hash": {
+            "url": "\$baseurl/SHA256SUMS"
+        }
+    }
 }
 EOF
 
