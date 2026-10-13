@@ -704,6 +704,9 @@ jobs:
           Invoke-Expression "& {$(Invoke-RestMethod https://get.scoop.sh)} -RunAsAdmin"
           Join-Path $HOME 'scoop\shims' | Add-Content -LiteralPath $env:GITHUB_PATH
       - if: runner.os != 'Windows'
+        # cargo-binstall looks the release up through the GitHub API, which rate-limits anonymous calls.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: scripts/verify-release.sh "${GITHUB_REF_NAME#v}" ${{ matrix.channels }}
       - if: runner.os == 'Windows'
         shell: pwsh

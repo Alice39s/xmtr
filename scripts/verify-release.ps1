@@ -31,7 +31,7 @@ function Get-InstalledVersion([string] $Channel) {
             $exe = Join-Path (scoop prefix xmtr) 'xmtr.exe'
         }
         'npm' {
-            npm install --global --silent --prefix $dir "@xmtr/cli@$Version" | Out-Host
+            npm install --global --loglevel error --prefix $dir "@xmtr/cli@$Version" | Out-Host
             $exe = Join-Path $dir 'xmtr.cmd'
         }
         'pypi' {

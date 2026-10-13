@@ -24,7 +24,7 @@ installed_version() {
         "${dir}/bin/xmtr" --version
       ;;
     npm)
-      npm install --global --silent --prefix "$dir" "@xmtr/cli@${version}" >&2 &&
+      npm install --global --loglevel error --prefix "$dir" "@xmtr/cli@${version}" >&2 &&
         "${dir}/bin/xmtr" --version
       ;;
     pypi)
