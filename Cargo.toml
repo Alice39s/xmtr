@@ -4,7 +4,7 @@ exclude = ["vendor/trippy-core"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -15,7 +15,7 @@ homepage = "https://xmsl.dev/ipmap"
 anyhow = "1"
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 # The version must match workspace.package.version; the release workflow checks it.
-xmtr-release = { path = "crates/release", version = "0.2.5" }
+xmtr-release = { path = "crates/release", version = "0.2.6" }
 
 [package]
 name = "xmtr"
