@@ -446,7 +446,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           tag=latest
           case "$version" in *-*) tag=next ;; esac
-          for tarball in npm/platforms/*.tgz "npm/xmtr-cli-${version}.tgz"; do
+          for tarball in ./npm/platforms/*.tgz "./npm/xmtr-cli-${version}.tgz"; do
             name="$(tar -xzOf "$tarball" package/package.json | jq -r .name)"
             if npm view "${name}@${version}" version >/dev/null 2>&1; then
               echo "${name} ${version} is already on npm"
