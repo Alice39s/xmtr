@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "crates/release", "crates/installer"]
+exclude = ["vendor/trippy-core"]
 resolver = "3"
 
 [workspace.package]
@@ -81,3 +82,8 @@ panic = "abort"
 
 [profile.release.package.xmtr-installer]
 opt-level = "z"
+
+# trippy-core 0.13.0 with Android handled like Linux when it picks the IPv4 header byte order;
+# see vendor/README.md.
+[patch.crates-io]
+trippy-core = { path = "vendor/trippy-core" }

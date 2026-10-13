@@ -1790,8 +1790,6 @@ dependencies = [
 [[package]]
 name = "trippy-core"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dddf03559eb5ebdf1bc7d5ffc7591dfab5793a2cbbf4f0f720bfcf60fafaa82c"
 dependencies = [
  "arrayvec",
  "bitflags",
