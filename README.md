@@ -141,7 +141,7 @@ The repositories are signed with the keys in [`packaging/keys`](packaging/keys).
 
 ## Platforms
 
-All builds are cross-compiled on Linux.
+All builds are cross-compiled on Linux. Before each release, CI runs every build and traces `127.0.0.1` with it. x86_64 and ARM64 builds for Linux, macOS and Windows run on hosted runners. The other Linux CPUs run under QEMU user emulation. FreeBSD runs in a virtual machine, and Android runs in the Termux image. After a release, CI installs xmtr through each package channel on Linux, macOS and Windows runners.
 
 | | System | Architectures |
 | :-: | --- | --- |
@@ -230,7 +230,7 @@ Usage: xmtr [OPTIONS] <TARGET>...
 cargo build --release --workspace
 ```
 
-The workspace builds `xmtr` and `xmtr-installer`. `nix build` builds `xmtr` from the flake. Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml`.
+The workspace builds `xmtr` and `xmtr-installer`. `nix build` builds `xmtr` from the flake. Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml`. The workspace builds against a patched trippy-core in `vendor/` that traces IPv4 on Android; see [vendor/README.md](vendor/README.md).
 
 ## License
 
