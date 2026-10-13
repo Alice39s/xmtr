@@ -45,8 +45,14 @@ jobs:
       - run: nix build --print-build-logs .#xmtr
       - run: ./result/bin/xmtr --version
 
-  windows:
-    runs-on: windows-latest
+  # Native tests on the hosted runners for each OS and CPU; ubuntu-latest runs them in `check`.
+  test:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -120,6 +126,9 @@ jobs:
         with:
           tool: cross
       - run: cross build --release --locked --workspace --target ${{ matrix.target }}
+      # cross starts Linux binaries under QEMU with the target's own C library.
+      - if: matrix.target != 'x86_64-unknown-freebsd'
+        run: cross run --release --locked --target ${{ matrix.target }} --bin xmtr -- --version
       - run: scripts/package.sh ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
@@ -152,6 +161,95 @@ jobs:
         with:
           name: xmtr-${{ matrix.target }}
           path: dist/*
+
+  # Starts every Linux, macOS and Windows build: natively where a hosted runner has the CPU, under
+  # QEMU user emulation with the target's glibc otherwise. Each one also traces 127.0.0.1.
+  smoke:
+    name: smoke ${{ matrix.target }}
+    needs: [zigbuild, cross]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: i686-unknown-linux-musl, os: ubuntu-latest }
+          - { target: i686-unknown-linux-gnu, os: ubuntu-latest, libs: i386, runner: qemu-i386 -L /usr/i686-linux-gnu }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: armv7-unknown-linux-gnueabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm -L /usr/arm-linux-gnueabihf }
+          - { target: armv7-unknown-linux-musleabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm }
+          - { target: arm-unknown-linux-gnueabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm -L /usr/arm-linux-gnueabihf }
+          - { target: arm-unknown-linux-musleabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm }
+          - { target: riscv64gc-unknown-linux-gnu, os: ubuntu-latest, libs: riscv64, runner: qemu-riscv64 -L /usr/riscv64-linux-gnu }
+          - { target: riscv64gc-unknown-linux-musl, os: ubuntu-latest, libs: riscv64, runner: qemu-riscv64 }
+          - { target: powerpc64le-unknown-linux-gnu, os: ubuntu-latest, libs: ppc64el, runner: qemu-ppc64le -L /usr/powerpc64le-linux-gnu }
+          - { target: powerpc64-unknown-linux-gnu, os: ubuntu-latest, libs: ppc64, runner: qemu-ppc64 -L /usr/powerpc64-linux-gnu }
+          - { target: s390x-unknown-linux-gnu, os: ubuntu-latest, libs: s390x, runner: qemu-s390x -L /usr/s390x-linux-gnu }
+          - { target: sparc64-unknown-linux-gnu, os: ubuntu-latest, libs: sparc64, runner: qemu-sparc64 -L /usr/sparc64-linux-gnu }
+          - { target: loongarch64-unknown-linux-gnu, os: ubuntu-latest, libs: loong64, runner: qemu-loongarch64 -L /usr/loongarch64-linux-gnu }
+          - { target: loongarch64-unknown-linux-musl, os: ubuntu-latest, libs: loong64, runner: qemu-loongarch64 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-gnu, os: windows-latest }
+          - { target: i686-pc-windows-gnu, os: windows-latest }
+          - { target: aarch64-pc-windows-gnullvm, os: windows-11-arm }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: xmtr-${{ matrix.target }}
+          path: dist
+      - if: matrix.libs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends qemu-user "libc6-${{ matrix.libs }}-cross" "libgcc-s1-${{ matrix.libs }}-cross"
+      - shell: bash
+        env:
+          XMTR_SMOKE_TRACE: "1"
+        run: bash scripts/smoke.sh ${{ matrix.target }} dist ${{ matrix.runner }}
+
+  # FreeBSD runs in a virtual machine.
+  smoke-freebsd:
+    needs: cross
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: xmtr-x86_64-unknown-freebsd
+          path: dist
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          prepare: pkg install -y bash
+          run: XMTR_SMOKE_TRACE=1 bash scripts/smoke.sh x86_64-unknown-freebsd dist
+
+  # Android builds run in the Termux image, the ARM ones under QEMU.
+  smoke-android:
+    name: smoke ${{ matrix.target }}
+    needs: android
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-linux-android, image: x86_64 }
+          - { target: i686-linux-android, image: i686 }
+          - { target: aarch64-linux-android, image: aarch64 }
+          - { target: armv7-linux-androideabi, image: arm }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: xmtr-${{ matrix.target }}
+          path: dist
+      - if: matrix.image == 'aarch64' || matrix.image == 'arm'
+        uses: docker/setup-qemu-action@v4
+      - run: |
+          docker run --rm --privileged -v "$PWD:/data/xmtr" -w /data/xmtr "termux/termux-docker:${{ matrix.image }}" \
+            bash scripts/smoke.sh ${{ matrix.target }} dist
 
   # Builds the npm, PyPI, deb, rpm and apk packages from the archives and installs each one once.
   packages:
@@ -274,7 +372,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, nix, zigbuild, cross, android, packages, chocolatey, docker]
+    needs: [test, nix, zigbuild, cross, android, smoke, smoke-freebsd, smoke-android, packages, chocolatey, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write
