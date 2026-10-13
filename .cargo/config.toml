@@ -1,0 +1,4 @@
+# Position-independent ELFv1 executables crash at startup with the glibc of Debian 13 and
+# Ubuntu 24.04 (checked under QEMU), so big-endian PowerPC links at a fixed address.
+[target.powerpc64-unknown-linux-gnu]
+rustflags = ["-C", "relocation-model=static"]
