@@ -82,7 +82,7 @@ The script picks the build for your system, checks it against the release `SHA25
 Pass installer options after `bash -s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash -s -- --dir ~/bin --version v0.2.4
+curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash -s -- --dir ~/bin --version v0.2.5
 ```
 
 `XMTR_INSTALL_DIR` sets the directory, and `XMTR_RELEASES` points both the script and the installer at a mirror of the releases page; on Windows these two variables are the only way to pass options. Archives for manual installs are on the [releases page](https://github.com/Alice39s/xmtr/releases). Releases are immutable: once published, their files and tag cannot change. Check a downloaded file with `gh release verify-asset <tag> <file> --repo Alice39s/xmtr`, and its [build provenance](https://github.com/Alice39s/xmtr/attestations) with `gh attestation verify <file> --repo Alice39s/xmtr`.
