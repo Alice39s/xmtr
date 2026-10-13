@@ -126,9 +126,6 @@ jobs:
         with:
           tool: cross
       - run: cross build --release --locked --workspace --target ${{ matrix.target }}
-      # cross starts Linux binaries under QEMU with the target's own C library.
-      - if: matrix.target != 'x86_64-unknown-freebsd'
-        run: cross run --release --locked --target ${{ matrix.target }} --bin xmtr -- --version
       - run: scripts/package.sh ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:

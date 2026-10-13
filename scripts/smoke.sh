@@ -36,6 +36,8 @@ fail() {
 reported="$("$@" "$xmtr" --version)"
 [ "$reported" = "xmtr ${version}" ] || fail "--version printed '${reported}', expected 'xmtr ${version}'"
 
+# Output is captured before grep reads it: `grep -q` would close the pipe early, and Rust's
+# println! aborts on a closed stdout.
 help="$("$@" "$xmtr")" || fail "xmtr without arguments exited with $?"
 grep -q '^Usage: xmtr' <<<"$help" || fail "xmtr without arguments printed no usage"
 
@@ -43,7 +45,8 @@ status=0
 "$@" "$xmtr" --no-upload >/dev/null 2>&1 || status=$?
 [ "$status" = 2 ] || fail "options without a target exited with ${status}, expected 2"
 
-"$@" "$installer" --help | grep -q '^Usage: xmtr-installer' || fail "xmtr-installer --help printed no usage"
+installer_help="$("$@" "$installer" --help)" || fail "xmtr-installer --help exited with $?"
+grep -q '^Usage: xmtr-installer' <<<"$installer_help" || fail "xmtr-installer --help printed no usage"
 
 if [ "${XMTR_SMOKE_TRACE:-}" = 1 ]; then
   sudo=()
