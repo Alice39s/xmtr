@@ -223,7 +223,7 @@ jobs:
           prepare: pkg install -y bash
           run: XMTR_SMOKE_TRACE=1 bash scripts/smoke.sh x86_64-unknown-freebsd dist
 
-  # Android builds run in the Termux image, the ARM ones under QEMU.
+  # Android builds run as root in the Termux image, the ARM ones under QEMU.
   smoke-android:
     name: smoke ${{ matrix.target }}
     needs: android
@@ -245,7 +245,8 @@ jobs:
       - if: matrix.image == 'aarch64' || matrix.image == 'arm'
         uses: docker/setup-qemu-action@v4
       - run: |
-          docker run --rm --privileged -v "$PWD:/data/xmtr" -w /data/xmtr "termux/termux-docker:${{ matrix.image }}" \
+          docker run --rm --privileged -e XMTR_SMOKE_TRACE=1 -v "$PWD:/data/xmtr" -w /data/xmtr \
+            --entrypoint /entrypoint_root.sh "termux/termux-docker:${{ matrix.image }}" \
             bash scripts/smoke.sh ${{ matrix.target }} dist
 
   # Builds the npm, PyPI, deb, rpm and apk packages from the archives and installs each one once.
