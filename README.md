@@ -101,10 +101,43 @@ xmtr self uninstall     # delete this binary
 | <img src=".github/assets/homebrew.svg" width="20" alt=""> | Homebrew (macOS, Linux) | `brew install alice39s/tap/xmtr` |
 | <img src=".github/assets/scoop.png" width="20" alt=""> | Scoop (Windows) | `scoop bucket add alice39s https://github.com/Alice39s/scoop-bucket` then `scoop install alice39s/xmtr` |
 | <img src=".github/assets/windows.svg" width="20" alt=""> | WinGet (Windows) | `winget install Alice39s.xmtr` |
+| <img src=".github/assets/chocolatey.svg" width="20" alt=""> | Chocolatey (Windows) | `choco install xmtr` |
+| <img src=".github/assets/npm.svg" width="20" alt=""> | npm | `npm install --global xmtr`, or `npx xmtr 1.1.1.1` |
+| <img src=".github/assets/pypi.svg" width="20" alt=""> | PyPI | `uv tool install xmtr`, `pipx install xmtr` or `pip install xmtr` |
 | <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/rust-dark.svg"><img src=".github/assets/rust.svg" width="20" alt=""></picture> | Cargo | `cargo binstall xmtr` for the release binary, or `cargo install xmtr` to build it |
+| <img src=".github/assets/mise.svg" width="20" alt=""> | mise | `mise use --global github:Alice39s/xmtr` |
 | <img src=".github/assets/nixos.svg" width="20" alt=""> | Nix | `nix run github:Alice39s/xmtr -- 1.1.1.1`, or `nix profile install github:Alice39s/xmtr` |
+| <img src=".github/assets/docker.svg" width="20" alt=""> | Docker | `docker run --rm ghcr.io/alice39s/xmtr 1.1.1.1` |
 
-The release workflow updates the Homebrew formula, the Scoop manifest and the crates on every release and opens the WinGet pull request; the Nix flake builds the checked-out source. Update packages installed this way with their manager rather than `xmtr self update`.
+The npm package and the PyPI wheels hold the same binaries as the release archives; npm picks the `@xmtr/<platform>` package for your system. The Docker image holds only the static binary and is built for amd64, arm64, armv7, armv6, 386, riscv64 and loong64. Docker grants raw sockets to containers by default; with Podman add `--cap-add NET_RAW`.
+
+**Linux package repositories**
+
+The deb, rpm and apk packages install `/usr/bin/xmtr` and grant it raw sockets with `setcap`, so every user can trace without root. They are attached to each release and served from signed repositories:
+
+| | System | Architectures |
+| :-: | --- | --- |
+| <img src=".github/assets/debian.svg" width="20" alt=""> | Debian, Ubuntu | amd64, arm64, armhf, i386, riscv64, loong64 |
+| <img src=".github/assets/fedora.svg" width="20" alt=""> | Fedora, RHEL | x86_64, aarch64, armv7hl, i686, riscv64, loongarch64 |
+| <img src=".github/assets/alpinelinux.svg" width="20" alt=""> | Alpine | x86_64, aarch64, armv7, armhf, x86, riscv64, loongarch64 |
+
+```sh
+# Debian, Ubuntu
+sudo curl -fsSL -o /usr/share/keyrings/xmtr.gpg https://alice39s.github.io/xmtr/xmtr.gpg
+echo "deb [signed-by=/usr/share/keyrings/xmtr.gpg] https://alice39s.github.io/xmtr/deb stable main" | sudo tee /etc/apt/sources.list.d/xmtr.list
+sudo apt update && sudo apt install xmtr
+
+# Fedora, RHEL
+sudo curl -fsSL -o /etc/yum.repos.d/xmtr.repo https://alice39s.github.io/xmtr/rpm/xmtr.repo
+sudo dnf install xmtr
+
+# Alpine
+wget -qO /etc/apk/keys/xmtr.rsa.pub https://alice39s.github.io/xmtr/apk/xmtr.rsa.pub
+echo https://alice39s.github.io/xmtr/apk >> /etc/apk/repositories
+apk add xmtr
+```
+
+The repositories are signed with the keys in [`packaging/keys`](packaging/keys). The release workflow publishes every channel above except mise and Nix, which read the GitHub release and the flake directly. Update packages installed this way with their manager rather than `xmtr self update`.
 
 ## Platforms
 
@@ -134,7 +167,7 @@ Tracing needs raw sockets.
 
 | System | Run as |
 | --- | --- |
-| Linux | root, or once: `sudo setcap cap_net_raw+ep $(command -v xmtr)` |
+| Linux | root, or once: `sudo setcap cap_net_raw+ep $(command -v xmtr)`; the deb, rpm and apk packages do this at install |
 | macOS | any user; ICMP and UDP use unprivileged sockets, TCP needs root |
 | Windows | an Administrator terminal |
 | FreeBSD, Android | root |
