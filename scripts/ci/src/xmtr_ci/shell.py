@@ -43,10 +43,21 @@ def run(
     subprocess.run(command(args), cwd=cwd, env=merged(env), input=stdin, text=True, check=True)
 
 
-def output(*args: Arg, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> str:
+def output(
+    *args: Arg,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    stdin: str | None = None,
+) -> str:
     announce(args)
     return subprocess.run(
-        command(args), cwd=cwd, env=merged(env), stdout=subprocess.PIPE, text=True, check=True
+        command(args),
+        cwd=cwd,
+        env=merged(env),
+        input=stdin,
+        stdout=subprocess.PIPE,
+        text=True,
+        check=True,
     ).stdout.strip()
 
 

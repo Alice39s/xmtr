@@ -5,8 +5,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import gnupg
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
-from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
 from pydantic import SecretStr
 
 from xmtr_ci.project import ROOT
@@ -29,14 +27,9 @@ def keyring(secret: SecretStr) -> Generator[tuple[gnupg.GPG, str]]:
 
 
 def check_apk_key(secret: SecretStr) -> None:
-    private = load_pem_private_key(secret.get_secret_value().encode(), password=None)
-    public = load_pem_public_key((KEYS / "xmtr.rsa.pub").read_bytes())
-    match private, public:
-        case RSAPrivateKey(), RSAPublicKey() if (
-            private.public_key().public_numbers() == public.public_numbers()
-        ):
-            return
-    raise SystemExit("APK_SIGNING_KEY does not match packaging/keys/xmtr.rsa.pub")
+    public = output("openssl", "pkey", "-pubout", stdin=secret.get_secret_value())
+    if public != (KEYS / "xmtr.rsa.pub").read_text().strip():
+        raise SystemExit("APK_SIGNING_KEY does not match packaging/keys/xmtr.rsa.pub")
 
 
 def apt(packages: Path, site: Path, gpg: gnupg.GPG, fingerprint: str) -> None:
