@@ -1,8 +1,8 @@
----
-default: minor
----
+## 0.3.0 (2026-10-14)
 
-# Show progress and results in a terminal panel
+### Features
+
+#### Show progress and results in a terminal panel
 
 In a terminal, xmtr now draws a panel below the prompt while it runs. Numbered steps (1. Resolve, 2. Trace, 3. Lookup, 4. Upload, 5. Result) show which step is active, each route has a progress bar, reverse DNS and AS lookups show how many addresses have answered, and the upload shows that it is still waiting for the gateway.
 
