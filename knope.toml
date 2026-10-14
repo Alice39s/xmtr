@@ -8,10 +8,15 @@
 # The pushed tag starts .github/workflows/release.yml, which builds and publishes the release.
 
 [package]
-# Every crate in the workspace shares `workspace.package.version`.
+# Every crate in the workspace shares `workspace.package.version`. Cargo.toml goes by pattern: the
+# `dependency` selector for xmtr-release would also add a version to the
+# `xmtr-release.workspace = true` entry that inherits it, and a pattern entry replaces knope's own
+# Cargo.toml handling for that file.
 versioned_files = [
-  "Cargo.toml",
-  { path = "Cargo.toml", dependency = "xmtr-release" },
+  { path = "Cargo.toml", regex = [
+    '(?m)^version = "(?<version>\d+\.\d+\.\d+)"$',
+    'xmtr-release = \{ path = "crates/release", version = "(?<version>\d+\.\d+\.\d+)" \}',
+  ] },
   { path = "Cargo.lock", dependency = "xmtr" },
   { path = "Cargo.lock", dependency = "xmtr-release" },
   { path = "Cargo.lock", dependency = "xmtr-installer" },
