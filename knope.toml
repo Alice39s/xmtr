@@ -1,4 +1,4 @@
-# Release configuration for knope (https://knope.tech).
+# Release configuration for knope (https://github.com/knope-dev/knope).
 #
 # Describe a change:   knope document-change   (writes .changeset/<name>.md)
 # Preview a release:   knope release --dry-run

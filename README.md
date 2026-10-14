@@ -236,7 +236,7 @@ The workspace builds `xmtr` and `xmtr-installer`. `nix build` builds `xmtr` from
 
 ## Releasing
 
-Releases are managed with [knope](https://knope.tech) and change files:
+Releases are managed with [knope](https://github.com/knope-dev/knope) and change files:
 
 1. With each user-facing change, run `knope document-change` and commit the file it writes to `.changeset/`.
 2. To release, run `knope release`. It sets the version in `Cargo.toml`, `Cargo.lock` and this README, moves the change files into [CHANGELOG.md](CHANGELOG.md), commits, and tags `vX.Y.Z`. Before 1.0, a `minor` change file raises only the patch number; `knope release --override-version X.Y.0` sets the version directly.
