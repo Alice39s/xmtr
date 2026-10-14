@@ -214,7 +214,6 @@ jobs:
       - uses: ./.github/actions/xmtr-ci
       - run: uv run xmtr-ci docker test
 
-  # Builds the aport from this commit in Alpine edge, as abuild -r does for an aports merge request.
   alpine:
     needs: check
     runs-on: ubuntu-latest
