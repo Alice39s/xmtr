@@ -1,0 +1,31 @@
+class Xmtr < Formula
+  desc "{{ project.SUMMARY }}"
+  homepage "{{ project.REPO }}"
+  version "{{ version }}"
+  license any_of: ["MIT", "Apache-2.0"]
+{% for os in ("macos", "linux") %}
+  on_{{ os }} do
+{%- for cpu in ("arm", "intel") %}
+    on_{{ cpu }} do
+      url "{{ project.download_url(tag, assets[os, cpu].name) }}"
+      sha256 "{{ assets[os, cpu].sha256 }}"
+    end
+{%- endfor %}
+  end
+{% endfor %}
+  def install
+    bin.install "xmtr"
+  end
+
+  def caveats
+    <<~TEXT
+      Tracing needs raw sockets. Run xmtr with sudo, or on Linux allow them once:
+        sudo setcap cap_net_raw+ep #{opt_bin}/xmtr
+      Update xmtr with brew upgrade rather than xmtr self update.
+    TEXT
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/xmtr --version")
+  end
+end

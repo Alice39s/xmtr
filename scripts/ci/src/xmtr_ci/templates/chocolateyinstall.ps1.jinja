@@ -1,0 +1,5 @@
+$ErrorActionPreference = 'Stop'
+$toolsDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+Get-ChocolateyUnzip -PackageName $env:ChocolateyPackageName -Destination $toolsDir `
+  -FileFullPath (Join-Path $toolsDir '{{ x86 }}') -FileFullPath64 (Join-Path $toolsDir '{{ x64 }}')
+Remove-Item (Join-Path $toolsDir '*.zip') -Force

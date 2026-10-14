@@ -1,0 +1,15 @@
+VERIFICATION
+Verification is intended to assist the Chocolatey moderators and community
+in verifying that this package's contents are trustworthy.
+
+The embedded archives are the Windows builds of the xmtr {{ version }} release:
+{%- for archive in archives %}
+  {{ project.download_url("v" ~ version, archive.name) }}
+{%- endfor %}
+
+Download them and compare their SHA-256 with Get-FileHash:
+{%- for archive in archives %}
+  {{ archive.name }}: {{ archive.sha256 }}
+{%- endfor %}
+
+The same checksums are listed in {{ project.download_url("v" ~ version, "SHA256SUMS") }}.

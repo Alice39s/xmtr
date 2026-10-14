@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: xmtr
+Version: {{ version }}
+Summary: {{ project.SUMMARY }}
+Keywords: traceroute,mtr,network,cli,geolocation
+Author-email: {{ project.AUTHOR }} <{{ project.EMAIL }}>
+License-Expression: {{ project.LICENSE }}
+{% for license in project.LICENSES -%}
+License-File: {{ license }}
+{% endfor -%}
+Project-URL: Homepage, https://xmsl.dev/ipmap
+Project-URL: Source, {{ project.REPO }}
+Project-URL: Issues, {{ project.REPO }}/issues
+Classifier: Environment :: Console
+Classifier: Intended Audience :: System Administrators
+Classifier: Programming Language :: Rust
+Classifier: Topic :: System :: Networking :: Monitoring
+Description-Content-Type: text/markdown
+
+{{ readme -}}
