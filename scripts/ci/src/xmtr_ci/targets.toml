@@ -1,0 +1,204 @@
+[[target]]
+triple = "x86_64-unknown-linux-musl"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest" }
+npm = "linux-x64"
+wheel = ["manylinux_2_17_x86_64", "manylinux2014_x86_64", "musllinux_1_1_x86_64"]
+deb = "amd64"
+rpm = "x86_64"
+apk = "x86_64"
+docker = "linux/amd64"
+homebrew = { os = "linux", cpu = "intel" }
+aur = "x86_64"
+
+[[target]]
+triple = "aarch64-unknown-linux-musl"
+builder = "zigbuild"
+smoke = { os = "ubuntu-24.04-arm" }
+npm = "linux-arm64"
+wheel = ["manylinux_2_17_aarch64", "manylinux2014_aarch64", "musllinux_1_1_aarch64"]
+deb = "arm64"
+rpm = "aarch64"
+apk = "aarch64"
+docker = "linux/arm64"
+homebrew = { os = "linux", cpu = "arm" }
+aur = "aarch64"
+
+[[target]]
+triple = "armv7-unknown-linux-musleabihf"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "arm", libs = "armhf" }
+npm = "linux-arm"
+wheel = ["manylinux_2_17_armv7l", "manylinux2014_armv7l", "musllinux_1_1_armv7l"]
+rpm = "armv7hl"
+apk = "armv7"
+docker = "linux/arm/v7"
+aur = "armv7h"
+
+[[target]]
+triple = "arm-unknown-linux-musleabihf"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "arm", libs = "armhf" }
+deb = "armhf"
+apk = "armhf"
+docker = "linux/arm/v6"
+
+[[target]]
+triple = "i686-unknown-linux-musl"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest" }
+npm = "linux-ia32"
+wheel = ["manylinux_2_17_i686", "manylinux2014_i686", "musllinux_1_1_i686"]
+deb = "i386"
+rpm = "i686"
+apk = "x86"
+docker = "linux/386"
+aur = "i686"
+
+[[target]]
+triple = "riscv64gc-unknown-linux-musl"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "riscv64", libs = "riscv64" }
+npm = "linux-riscv64"
+deb = "riscv64"
+rpm = "riscv64"
+apk = "riscv64"
+docker = "linux/riscv64"
+
+[[target]]
+triple = "loongarch64-unknown-linux-musl"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "loongarch64", libs = "loong64" }
+npm = "linux-loong64"
+deb = "loong64"
+rpm = "loongarch64"
+apk = "loongarch64"
+docker = "linux/loong64"
+
+[[target]]
+triple = "x86_64-unknown-linux-gnu"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest" }
+
+[[target]]
+triple = "i686-unknown-linux-gnu"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "i386", libs = "i386", sysroot = "/usr/i686-linux-gnu" }
+
+[[target]]
+triple = "aarch64-unknown-linux-gnu"
+builder = "zigbuild"
+smoke = { os = "ubuntu-24.04-arm" }
+
+[[target]]
+triple = "armv7-unknown-linux-gnueabihf"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "arm", libs = "armhf", sysroot = "/usr/arm-linux-gnueabihf" }
+
+[[target]]
+triple = "arm-unknown-linux-gnueabihf"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "arm", libs = "armhf", sysroot = "/usr/arm-linux-gnueabihf" }
+
+[[target]]
+triple = "riscv64gc-unknown-linux-gnu"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "riscv64", libs = "riscv64", sysroot = "/usr/riscv64-linux-gnu" }
+
+[[target]]
+triple = "powerpc64le-unknown-linux-gnu"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "ppc64le", libs = "ppc64el", sysroot = "/usr/powerpc64le-linux-gnu" }
+npm = "linux-ppc64"
+
+[[target]]
+triple = "s390x-unknown-linux-gnu"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "s390x", libs = "s390x", sysroot = "/usr/s390x-linux-gnu" }
+npm = "linux-s390x"
+
+[[target]]
+triple = "loongarch64-unknown-linux-gnu"
+builder = "zigbuild"
+smoke = { os = "ubuntu-latest", qemu = "loongarch64", libs = "loong64", sysroot = "/usr/loongarch64-linux-gnu" }
+
+[[target]]
+triple = "powerpc64-unknown-linux-gnu"
+builder = "cross"
+smoke = { os = "ubuntu-latest", qemu = "ppc64", libs = "ppc64", sysroot = "/usr/powerpc64-linux-gnu" }
+
+[[target]]
+triple = "sparc64-unknown-linux-gnu"
+builder = "cross"
+smoke = { os = "ubuntu-latest", qemu = "sparc64", libs = "sparc64", sysroot = "/usr/sparc64-linux-gnu" }
+
+[[target]]
+triple = "x86_64-apple-darwin"
+builder = "zigbuild"
+smoke = { os = "macos-15-intel" }
+npm = "darwin-x64"
+wheel = ["macosx_10_12_x86_64"]
+homebrew = { os = "macos", cpu = "intel" }
+
+[[target]]
+triple = "aarch64-apple-darwin"
+builder = "zigbuild"
+smoke = { os = "macos-latest" }
+npm = "darwin-arm64"
+wheel = ["macosx_11_0_arm64"]
+homebrew = { os = "macos", cpu = "arm" }
+
+[[target]]
+triple = "x86_64-pc-windows-gnu"
+builder = "zigbuild"
+smoke = { os = "windows-latest" }
+npm = "win32-x64"
+wheel = ["win_amd64"]
+scoop = "64bit"
+chocolatey = "x64"
+
+[[target]]
+triple = "i686-pc-windows-gnu"
+builder = "zigbuild"
+smoke = { os = "windows-latest" }
+npm = "win32-ia32"
+wheel = ["win32"]
+scoop = "32bit"
+chocolatey = "x86"
+
+[[target]]
+triple = "aarch64-pc-windows-gnullvm"
+builder = "zigbuild"
+smoke = { os = "windows-11-arm" }
+npm = "win32-arm64"
+wheel = ["win_arm64"]
+scoop = "arm64"
+
+[[target]]
+triple = "x86_64-unknown-freebsd"
+builder = "cross"
+smoke = { vm = "freebsd" }
+npm = "freebsd-x64"
+
+[[target]]
+triple = "aarch64-linux-android"
+builder = "ndk"
+smoke = { termux = "aarch64" }
+npm = "android-arm64"
+
+[[target]]
+triple = "armv7-linux-androideabi"
+builder = "ndk"
+smoke = { termux = "arm" }
+npm = "android-arm"
+
+[[target]]
+triple = "x86_64-linux-android"
+builder = "ndk"
+smoke = { termux = "x86_64" }
+npm = "android-x64"
+
+[[target]]
+triple = "i686-linux-android"
+builder = "ndk"
+smoke = { termux = "i686" }

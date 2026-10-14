@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>xmtr</id>
+    <version>{{ version }}</version>
+    <packageSourceUrl>{{ project.REPO }}/blob/main/scripts/ci/src/xmtr_ci/packages/chocolatey.py</packageSourceUrl>
+    <owners>xmtr</owners>
+    <title>xmtr</title>
+    <authors>{{ project.AUTHOR }}</authors>
+    <projectUrl>{{ project.REPO }}</projectUrl>
+    <licenseUrl>{{ project.REPO }}/blob/main/LICENSE-MIT</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>{{ project.REPO }}</projectSourceUrl>
+    <docsUrl>{{ project.REPO }}#readme</docsUrl>
+    <bugTrackerUrl>{{ project.REPO }}/issues</bugTrackerUrl>
+    <tags>xmtr traceroute mtr network cli</tags>
+    <summary>{{ project.SUMMARY }}</summary>
+    <description>xmtr traces several targets at once with trippy, stops each route as soon as its path is stable, and uploads the result to xmsl.dev IPMap, which places every hop on a map and replays the route.
+
+Tracing uses raw sockets, so run xmtr from an Administrator terminal. Update it with choco upgrade rather than xmtr self update.</description>
+    <releaseNotes>{{ project.REPO }}/releases/tag/v{{ version }}</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

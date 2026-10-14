@@ -1,0 +1,23 @@
+# Maintainer: {{ project.AUTHOR }} <{{ project.EMAIL }}>
+pkgname=xmtr-bin
+pkgver={{ version }}
+pkgrel=1
+pkgdesc="{{ project.SUMMARY }}"
+arch=({% for asset in assets %}'{{ asset.arch }}'{{ " " if not loop.last }}{% endfor %})
+url="{{ project.REPO }}"
+license=('MIT OR Apache-2.0')
+provides=('xmtr')
+conflicts=('xmtr')
+options=('!strip' '!debug')
+{%- for asset in assets %}
+source_{{ asset.arch }}=("xmtr-${pkgver}-{{ asset.arch }}.tar.gz::{{ project.REPO }}/releases/download/v${pkgver}/{{ asset.name }}")
+{%- endfor %}
+{%- for asset in assets %}
+sha256sums_{{ asset.arch }}=('{{ asset.sha256 }}')
+{%- endfor %}
+
+package() {
+  install -Dm755 xmtr "${pkgdir}/usr/bin/xmtr"
+  install -Dm644 LICENSE-MIT "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
+}

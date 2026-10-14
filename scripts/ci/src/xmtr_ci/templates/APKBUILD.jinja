@@ -1,0 +1,35 @@
+# Maintainer: {{ project.AUTHOR }} <{{ project.EMAIL }}>
+pkgname=xmtr
+pkgver={{ version }}
+pkgrel=0
+pkgdesc="{{ project.SUMMARY }}"
+url="{{ project.REPO }}"
+arch="all"
+license="MIT OR Apache-2.0"
+makedepends="cargo cargo-auditable"
+subpackages="$pkgname-doc"
+source="$pkgname-$pkgver.tar.gz::{{ project.REPO }}/archive/refs/tags/v$pkgver.tar.gz"
+
+prepare() {
+	default_prepare
+
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen --package xmtr
+}
+
+check() {
+	cargo test --frozen --package xmtr
+}
+
+package() {
+	install -Dm755 target/release/xmtr -t "$pkgdir"/usr/bin/
+	install -Dm644 LICENSE-MIT LICENSE-APACHE \
+		-t "$pkgdir"/usr/share/licenses/$pkgname/
+}
+
+sha512sums="
+{{ sha512 }}  xmtr-{{ version }}.tar.gz
+"
