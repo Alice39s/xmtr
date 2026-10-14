@@ -234,6 +234,16 @@ cargo build --release --workspace
 
 The workspace builds `xmtr` and `xmtr-installer`. `nix build` builds `xmtr` from the flake. Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml`. The workspace builds against a patched trippy-core in `vendor/` that traces IPv4 on Android; see [vendor/README.md](vendor/README.md).
 
+## Releasing
+
+Releases are managed with [knope](https://knope.tech) and change files:
+
+1. With each user-facing change, run `knope document-change` and commit the file it writes to `.changeset/`.
+2. To release, run `knope release`. It sets the version in `Cargo.toml`, `Cargo.lock` and this README, moves the change files into [CHANGELOG.md](CHANGELOG.md), commits, and tags `vX.Y.Z`. Before 1.0, a `minor` change file raises only the patch number; `knope release --override-version X.Y.0` sets the version directly.
+3. `git push --atomic origin main vX.Y.Z` starts the release workflow. It builds and checks every target, publishes the GitHub release with the CHANGELOG.md section as its notes, and then publishes to the package managers.
+
+CI checks `knope.toml` and that every versioned file has the same version, and adds a preview of the next release to the job summary while change files are pending.
+
 ## License
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
