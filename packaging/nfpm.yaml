@@ -1,4 +1,4 @@
-# nFPM configuration for the deb, rpm and apk packages; scripts/linux-packages.sh sets the variables.
+# nFPM configuration for the deb, rpm and apk packages; `xmtr-ci package linux` sets the variables.
 name: xmtr
 arch: ${PKG_ARCH}
 platform: linux

@@ -12,44 +12,31 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  FORCE_COLOR: "1"
+  UV_PROJECT: scripts/ci
+  UV_LOCKED: "1"
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.matrix.outputs.build }}
+      smoke: ${{ steps.matrix.outputs.smoke }}
+      android: ${{ steps.matrix.outputs.android }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: shellcheck install.sh scripts/*.sh packaging/linux/postinstall.sh
-      - run: node --check packaging/npm/xmtr.js
       - uses: taiki-e/install-action@v2
         with:
-          tool: knope,parse-changelog
-      # knope reads the version from every versioned file and fails when they disagree, which covers
-      # the xmtr-release dependency in Cargo.toml and the crates in Cargo.lock.
-      - name: knope config and versions
-        run: |
-          knope --validate
-          knope get-version
-      - name: Pending release notes
-        if: hashFiles('.changeset/*.md') != ''
-        run: |
-          {
-            echo '## Pending release'
-            echo '```text'
-            knope release --dry-run
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Tag matches the crate version and has release notes
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          version="$(knope get-version)"
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME does not match version $version"; exit 1; }
-          parse-changelog CHANGELOG.md "$version" > /dev/null
+          tool: knope
+      - uses: ./.github/actions/xmtr-ci
+      - id: matrix
+        run: uv run xmtr-ci matrix
+      - run: uv run xmtr-ci check scripts
+      - run: uv run xmtr-ci check release
+      - run: uv run xmtr-ci check rust
 
   nix:
     runs-on: ubuntu-latest
@@ -59,7 +46,6 @@ jobs:
       - run: nix build --print-build-logs .#xmtr
       - run: ./result/bin/xmtr --version
 
-  # Native tests on the hosted runners for each OS and CPU; ubuntu-latest runs them in `check`.
   test:
     name: test ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -72,158 +58,59 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci check rust --no-fmt
 
-  zigbuild:
-    name: zigbuild ${{ matrix.target }}
+  build:
+    name: build ${{ matrix.target }}
     needs: check
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - i686-unknown-linux-gnu
-          - i686-unknown-linux-musl
-          - aarch64-unknown-linux-gnu
-          - aarch64-unknown-linux-musl
-          - armv7-unknown-linux-gnueabihf
-          - armv7-unknown-linux-musleabihf
-          - arm-unknown-linux-gnueabihf
-          - arm-unknown-linux-musleabihf
-          - riscv64gc-unknown-linux-gnu
-          - riscv64gc-unknown-linux-musl
-          - powerpc64le-unknown-linux-gnu
-          - s390x-unknown-linux-gnu
-          - loongarch64-unknown-linux-gnu
-          - loongarch64-unknown-linux-musl
-          - x86_64-pc-windows-gnu
-          - i686-pc-windows-gnu
-          - aarch64-pc-windows-gnullvm
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
+      matrix: ${{ fromJSON(needs.check.outputs.build) }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: mlugg/setup-zig@v2
+      - if: matrix.builder == 'zigbuild'
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.14.1
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-zigbuild
-      - run: cargo zigbuild --release --locked --workspace --target ${{ matrix.target }}
-      - run: scripts/package.sh ${{ matrix.target }}
+          tool: ${{ matrix.tool }}
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci build ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: xmtr-${{ matrix.target }}
           path: dist/*
 
-  cross:
-    name: cross ${{ matrix.target }}
-    needs: check
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-freebsd
-          - powerpc64-unknown-linux-gnu
-          - sparc64-unknown-linux-gnu
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-      - run: cross build --release --locked --workspace --target ${{ matrix.target }}
-      - run: scripts/package.sh ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xmtr-${{ matrix.target }}
-          path: dist/*
-
-  android:
-    name: android ${{ matrix.target }}
-    needs: check
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - aarch64-linux-android
-          - armv7-linux-androideabi
-          - x86_64-linux-android
-          - i686-linux-android
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-ndk
-      - run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo ndk --platform 24 --target ${{ matrix.target }} build --release --locked --workspace
-      - run: scripts/package.sh ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xmtr-${{ matrix.target }}
-          path: dist/*
-
-  # Starts every Linux, macOS and Windows build: natively where a hosted runner has the CPU, under
-  # QEMU user emulation with the target's glibc otherwise. Each one also traces 127.0.0.1.
+  # Linux, macOS and Windows builds run natively where a hosted runner has the CPU and under QEMU
+  # user emulation otherwise. Each one also traces 127.0.0.1.
   smoke:
     name: smoke ${{ matrix.target }}
-    needs: [zigbuild, cross]
+    needs: [check, build]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
-          - { target: i686-unknown-linux-musl, os: ubuntu-latest }
-          - { target: i686-unknown-linux-gnu, os: ubuntu-latest, libs: i386, runner: qemu-i386 -L /usr/i686-linux-gnu }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
-          - { target: armv7-unknown-linux-gnueabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm -L /usr/arm-linux-gnueabihf }
-          - { target: armv7-unknown-linux-musleabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm }
-          - { target: arm-unknown-linux-gnueabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm -L /usr/arm-linux-gnueabihf }
-          - { target: arm-unknown-linux-musleabihf, os: ubuntu-latest, libs: armhf, runner: qemu-arm }
-          - { target: riscv64gc-unknown-linux-gnu, os: ubuntu-latest, libs: riscv64, runner: qemu-riscv64 -L /usr/riscv64-linux-gnu }
-          - { target: riscv64gc-unknown-linux-musl, os: ubuntu-latest, libs: riscv64, runner: qemu-riscv64 }
-          - { target: powerpc64le-unknown-linux-gnu, os: ubuntu-latest, libs: ppc64el, runner: qemu-ppc64le -L /usr/powerpc64le-linux-gnu }
-          - { target: powerpc64-unknown-linux-gnu, os: ubuntu-latest, libs: ppc64, runner: qemu-ppc64 -L /usr/powerpc64-linux-gnu }
-          - { target: s390x-unknown-linux-gnu, os: ubuntu-latest, libs: s390x, runner: qemu-s390x -L /usr/s390x-linux-gnu }
-          - { target: sparc64-unknown-linux-gnu, os: ubuntu-latest, libs: sparc64, runner: qemu-sparc64 -L /usr/sparc64-linux-gnu }
-          - { target: loongarch64-unknown-linux-gnu, os: ubuntu-latest, libs: loong64, runner: qemu-loongarch64 -L /usr/loongarch64-linux-gnu }
-          - { target: loongarch64-unknown-linux-musl, os: ubuntu-latest, libs: loong64, runner: qemu-loongarch64 }
-          - { target: x86_64-apple-darwin, os: macos-15-intel }
-          - { target: aarch64-apple-darwin, os: macos-latest }
-          - { target: x86_64-pc-windows-gnu, os: windows-latest }
-          - { target: i686-pc-windows-gnu, os: windows-latest }
-          - { target: aarch64-pc-windows-gnullvm, os: windows-11-arm }
+      matrix: ${{ fromJSON(needs.check.outputs.smoke) }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
         with:
           name: xmtr-${{ matrix.target }}
           path: dist
-      - if: matrix.libs
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends qemu-user "libc6-${{ matrix.libs }}-cross" "libgcc-s1-${{ matrix.libs }}-cross"
-      - shell: bash
-        env:
-          XMTR_SMOKE_TRACE: "1"
-        run: bash scripts/smoke.sh ${{ matrix.target }} dist ${{ matrix.runner }}
+      - if: matrix.apt
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: ${{ matrix.apt }}
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci smoke ${{ matrix.target }} --trace
 
-  # FreeBSD runs in a virtual machine.
   smoke-freebsd:
-    needs: cross
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -234,22 +121,18 @@ jobs:
       - uses: vmactions/freebsd-vm@v1
         with:
           release: "14.3"
-          prepare: pkg install -y bash
-          run: XMTR_SMOKE_TRACE=1 bash scripts/smoke.sh x86_64-unknown-freebsd dist
+          sync: sshfs
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci smoke x86_64-unknown-freebsd --trace
 
   # Android builds run as root in the Termux image, the ARM ones under QEMU.
   smoke-android:
     name: smoke ${{ matrix.target }}
-    needs: android
+    needs: [check, build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { target: x86_64-linux-android, image: x86_64 }
-          - { target: i686-linux-android, image: i686 }
-          - { target: aarch64-linux-android, image: aarch64 }
-          - { target: armv7-linux-androideabi, image: arm }
+      matrix: ${{ fromJSON(needs.check.outputs.android) }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
@@ -258,14 +141,12 @@ jobs:
           path: dist
       - if: matrix.image == 'aarch64' || matrix.image == 'arm'
         uses: docker/setup-qemu-action@v4
-      - run: |
-          docker run --rm --privileged -e XMTR_SMOKE_TRACE=1 -v "$PWD:/data/xmtr" -w /data/xmtr \
-            --entrypoint /entrypoint_root.sh "termux/termux-docker:${{ matrix.image }}" \
-            bash scripts/smoke.sh ${{ matrix.target }} dist
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci smoke ${{ matrix.target }} --trace
 
   # Builds the npm, PyPI, deb, rpm and apk packages from the archives and installs each one once.
   packages:
-    needs: [zigbuild, cross, android]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -277,49 +158,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-      - run: python -m pip install wheel packaging twine
-      - name: Install nFPM
-        run: |
-          curl -fsSLO https://github.com/goreleaser/nfpm/releases/download/v2.48.0/nfpm_2.48.0_Linux_x86_64.tar.gz
-          echo "6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750  nfpm_2.48.0_Linux_x86_64.tar.gz" | sha256sum -c
-          sudo tar -xzf nfpm_2.48.0_Linux_x86_64.tar.gz -C /usr/local/bin nfpm
-      - id: version
-        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "xmtr") | .version')" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci package npm
+      - run: uv run xmtr-ci package wheels
       # Pull requests from forks get no secrets, so their rpm and apk packages stay unsigned.
-      - name: Signing keys
-        if: github.event_name != 'pull_request'
-        env:
-          PACKAGES_GPG_KEY: ${{ secrets.PACKAGES_GPG_KEY }}
-          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
-        run: |
-          printf '%s\n' "$PACKAGES_GPG_KEY" > "$RUNNER_TEMP/xmtr-gpg.asc"
-          printf '%s\n' "$APK_SIGNING_KEY" > "$RUNNER_TEMP/xmtr.rsa"
-          echo "RPM_SIGNING_KEY_FILE=$RUNNER_TEMP/xmtr-gpg.asc" >> "$GITHUB_ENV"
-          echo "APK_SIGNING_KEY_FILE=$RUNNER_TEMP/xmtr.rsa" >> "$GITHUB_ENV"
       - env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          scripts/npm-packages.sh "$VERSION" dist packages/npm
-          scripts/wheels.sh "$VERSION" dist packages/wheels
-          scripts/linux-packages.sh "$VERSION" dist packages/linux
-      - name: Install every format once
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          npm install --global "packages/npm/platforms/xmtr-linux-x64-${VERSION}.tgz" "packages/npm/xmtr-cli-${VERSION}.tgz"
-          xmtr --version
-          twine check packages/wheels/*.whl
-          python -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install packages/wheels/*manylinux*x86_64*.whl
-          "$RUNNER_TEMP/venv/bin/xmtr" --version
-          sudo dpkg --install packages/linux/xmtr_*_amd64.deb
-          /usr/bin/xmtr --version
-          getcap /usr/bin/xmtr | grep cap_net_raw
-          docker run --rm -v "$PWD/packages/linux:/pkg:ro" fedora:latest sh -euc 'rpm --install --nosignature /pkg/*.x86_64.rpm && xmtr --version'
-          docker run --rm -v "$PWD/packages/linux:/pkg:ro" alpine:latest sh -euc 'apk add --quiet --allow-untrusted /pkg/*_x86_64.apk && xmtr --version'
+          PACKAGES_GPG_KEY: ${{ github.event_name != 'pull_request' && secrets.PACKAGES_GPG_KEY || '' }}
+          APK_SIGNING_KEY: ${{ github.event_name != 'pull_request' && secrets.APK_SIGNING_KEY || '' }}
+        run: uv run xmtr-ci package linux
+      - run: uv run xmtr-ci package test npm wheels deb rpm apk
       - uses: actions/upload-artifact@v4
         with:
           name: packages-npm
@@ -335,7 +182,7 @@ jobs:
 
   # Packs the Chocolatey package with the Windows archives embedded and installs it once.
   chocolatey:
-    needs: zigbuild
+    needs: build
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -344,20 +191,9 @@ jobs:
           pattern: xmtr-*-pc-windows-gnu
           path: dist
           merge-multiple: true
-      - id: version
-        shell: bash
-        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "xmtr") | .version')" >> "$GITHUB_OUTPUT"
-      - shell: bash
-        run: scripts/chocolatey.sh "${{ steps.version.outputs.version }}" dist packages/chocolatey
-      - shell: pwsh
-        run: |
-          choco pack packages/chocolatey/xmtr.nuspec --outputdirectory packages
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          choco install xmtr --source "$PWD/packages" --yes --no-progress
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          xmtr --version
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          choco uninstall xmtr --yes --no-progress
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci package chocolatey
+      - run: uv run xmtr-ci package test chocolatey
       - uses: actions/upload-artifact@v4
         with:
           name: packages-chocolatey
@@ -365,7 +201,7 @@ jobs:
 
   # Builds the image for every platform; the amd64 image runs once.
   docker:
-    needs: zigbuild
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -374,17 +210,22 @@ jobs:
           pattern: xmtr-*-linux-musl*
           path: dist
           merge-multiple: true
-      - id: context
-        run: echo "platforms=$(scripts/docker-context.sh dist docker)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v4
-      - run: |
-          docker buildx build --platform linux/amd64 --load --tag xmtr:test --file packaging/Dockerfile docker
-          docker run --rm xmtr:test --version
-          docker buildx build --platform "${{ steps.context.outputs.platforms }}" --file packaging/Dockerfile docker
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci docker test
+
+  # Builds the aport from this commit in Alpine edge, as abuild -r does for an aports merge request.
+  alpine:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci alpine build
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, nix, zigbuild, cross, android, smoke, smoke-freebsd, smoke-android, packages, chocolatey, docker]
+    needs: [test, nix, build, smoke, smoke-freebsd, smoke-android, packages, chocolatey, docker, alpine]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -392,9 +233,6 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v5
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: parse-changelog
       - uses: actions/download-artifact@v5
         with:
           pattern: xmtr-*
@@ -404,22 +242,15 @@ jobs:
         with:
           name: packages-linux
           path: dist
-      - run: cd dist && sha256sum -- * > SHA256SUMS
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci release prepare
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/*
-      # The notes are the CHANGELOG.md section that `knope release` wrote for this version.
-      - run: parse-changelog CHANGELOG.md "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
       # Releases are immutable once published, so every file is attached to a draft first.
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          prerelease=""
-          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease --latest=false" ;; esac
-          # shellcheck disable=SC2086
-          gh release create "${GITHUB_REF_NAME}" --draft --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file "$RUNNER_TEMP/notes.md" $prerelease
-          gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}"
-          gh release edit "${GITHUB_REF_NAME}" --draft=false --repo "${GITHUB_REPOSITORY}"
+        run: uv run xmtr-ci release publish
 
   crates:
     needs: release
@@ -431,109 +262,55 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
+      - uses: ./.github/actions/xmtr-ci
       - env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          for crate in xmtr-release xmtr; do
-            status="$(curl -s -o /dev/null -w '%{http_code}' -A 'xmtr release workflow (xmtr.opensource@xmsl.dev)' "https://crates.io/api/v1/crates/${crate}/${version}")"
-            if [ "$status" = 200 ]; then
-              echo "${crate} ${version} is already on crates.io"
-            else
-              cargo publish --locked --package "$crate"
-            fi
-          done
+        run: uv run xmtr-ci publish crates
 
   homebrew:
     needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --dir dist --repo "${GITHUB_REPOSITORY}"
-      - run: scripts/package-managers.sh "${GITHUB_REF_NAME}" dist/SHA256SUMS packages
       - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.HOMEBREW_TAP_KEY }}
-      - run: |
-          git clone --depth 1 git@github.com:Alice39s/homebrew-tap.git tap
-          mkdir -p tap/Formula
-          cp packages/homebrew/Formula/xmtr.rb tap/Formula/xmtr.rb
-          cd tap
-          git config user.name Alice39s
-          git config user.email xmtr.opensource@xmsl.dev
-          git add Formula/xmtr.rb
-          git diff --cached --quiet || git commit -m "xmtr ${GITHUB_REF_NAME#v}"
-          git push origin HEAD:main
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci publish homebrew
 
   scoop:
     needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --dir dist --repo "${GITHUB_REPOSITORY}"
-      - run: scripts/package-managers.sh "${GITHUB_REF_NAME}" dist/SHA256SUMS packages
       - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.SCOOP_BUCKET_KEY }}
-      - run: |
-          git clone --depth 1 git@github.com:Alice39s/scoop-bucket.git bucket
-          mkdir -p bucket/bucket
-          cp packages/scoop/bucket/xmtr.json bucket/bucket/xmtr.json
-          cd bucket
-          git config user.name Alice39s
-          git config user.email xmtr.opensource@xmsl.dev
-          git add bucket/xmtr.json
-          git diff --cached --quiet || git commit -m "xmtr ${GITHUB_REF_NAME#v}"
-          git push origin HEAD:main
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci publish scoop
 
+  # Builds the package once in Arch Linux to check the sources and checksums, and writes .SRCINFO.
   aur:
     needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --dir dist --repo "${GITHUB_REPOSITORY}"
-      - run: scripts/package-managers.sh "${GITHUB_REF_NAME}" dist/SHA256SUMS packages
-      # Builds the package once in Arch Linux to check the sources and checksums, and writes .SRCINFO.
-      - run: |
-          docker run --rm -v "$PWD/packages/aur:/pkg" archlinux:latest bash -euc '
-            pacman -Syu --noconfirm --needed base-devel >/dev/null
-            useradd -m builder
-            chown -R builder /pkg
-            su builder -c "cd /pkg && makepkg --printsrcinfo > .SRCINFO && makepkg -f --noconfirm"
-            rm -rf /pkg/src /pkg/pkg /pkg/*.tar.gz /pkg/*.pkg.tar.zst
-          '
-          cat packages/aur/.SRCINFO
       - if: vars.AUR_ENABLED == 'true'
         uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.AUR_SSH_KEY }}
-      - if: vars.AUR_ENABLED == 'true'
-        run: |
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
-          git clone ssh://aur@aur.archlinux.org/xmtr-bin.git aur
-          cp packages/aur/PKGBUILD packages/aur/.SRCINFO aur/
-          cd aur
-          git config user.name Alice39s
-          git config user.email xmtr.opensource@xmsl.dev
-          git add PKGBUILD .SRCINFO
-          git diff --cached --quiet || git commit -m "xmtr-bin ${GITHUB_REF_NAME#v}"
-          git push origin HEAD:master
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci publish aur ${{ vars.AUR_ENABLED == 'true' && '--push' || '--no-push' }}
 
   winget:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/xmtr-ci
       # The action updates an existing package, so it runs once the first version is in winget-pkgs.
       - id: listed
-        run: |
-          status="$(curl -s -o /dev/null -w '%{http_code}' https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/Alice39s/xmtr)"
-          echo "listed=$([ "$status" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        run: uv run xmtr-ci publish winget-listed
       - if: steps.listed.outputs.listed == 'true'
         uses: vedantmgoyal9/winget-releaser@v2
         with:
@@ -547,6 +324,7 @@ jobs:
     permissions:
       id-token: write
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -556,20 +334,10 @@ jobs:
         with:
           name: packages-npm
           path: npm
+      - uses: ./.github/actions/xmtr-ci
       # Trusted publishing signs in through OIDC. The platform packages go first, so @xmtr/cli
       # never points at a version that is missing.
-      - run: |
-          version="${GITHUB_REF_NAME#v}"
-          tag=latest
-          case "$version" in *-*) tag=next ;; esac
-          for tarball in ./npm/platforms/*.tgz "./npm/xmtr-cli-${version}.tgz"; do
-            name="$(tar -xzOf "$tarball" package/package.json | jq -r .name)"
-            if npm view "${name}@${version}" version >/dev/null 2>&1; then
-              echo "${name} ${version} is already on npm"
-            else
-              npm publish "$tarball" --access public --tag "$tag"
-            fi
-          done
+      - run: uv run xmtr-ci publish npm
 
   pypi:
     needs: release
@@ -602,17 +370,14 @@ jobs:
         with:
           name: packages-linux
           path: packages
-      - run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq reprepro createrepo-c
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: reprepro createrepo-c
+      - uses: ./.github/actions/xmtr-ci
       - env:
           PACKAGES_GPG_KEY: ${{ secrets.PACKAGES_GPG_KEY }}
           APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
-        run: |
-          printf '%s\n' "$PACKAGES_GPG_KEY" | gpg --batch --quiet --import
-          printf '%s\n' "$APK_SIGNING_KEY" > "$RUNNER_TEMP/xmtr.rsa"
-          GPG_KEY_ID="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')" \
-            APK_SIGNING_KEY_FILE="$RUNNER_TEMP/xmtr.rsa" scripts/linux-repos.sh packages site
+        run: uv run xmtr-ci repositories
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
@@ -634,14 +399,9 @@ jobs:
           pattern: xmtr-*-linux-musl*
           path: dist
           merge-multiple: true
+      - uses: ./.github/actions/xmtr-ci
       - id: context
-        run: |
-          echo "platforms=$(scripts/docker-context.sh dist docker)" >> "$GITHUB_OUTPUT"
-          version="${GITHUB_REF_NAME#v}"
-          tags="ghcr.io/alice39s/xmtr:${version}"
-          case "$version" in *-*) ;; *) tags="${tags},ghcr.io/alice39s/xmtr:latest" ;; esac
-          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+        run: uv run xmtr-ci docker context
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -670,31 +430,22 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
+  # New versions wait for moderation before they appear on community.chocolatey.org. Until the
+  # package's first version is approved, the community repository accepts no other version, so the
+  # push is left to a release that follows the approval.
   chocolatey-publish:
     needs: release
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
         with:
           name: packages-chocolatey
           path: packages
-      # New versions wait for moderation before they appear on community.chocolatey.org. Until the
-      # package's first version is approved, the community repository accepts no other version, so the
-      # push is left to a release that follows the approval.
-      - shell: pwsh
-        env:
+      - uses: ./.github/actions/xmtr-ci
+      - env:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
-        run: |
-          $package = Get-ChildItem packages/*.nupkg
-          $approved = choco search xmtr --exact --limit-output --source https://community.chocolatey.org/api/v2/
-          # Exit code 2 is "nothing found" when enhanced exit codes are on.
-          if ($LASTEXITCODE -notin 0, 2) { exit $LASTEXITCODE }
-          if (-not $approved) {
-            Write-Output "::warning::xmtr has no approved version on community.chocolatey.org yet, so $($package.Name) is not pushed"
-            exit 0
-          }
-          choco push $package.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        run: uv run xmtr-ci publish chocolatey
 
   # Installs the published release through each channel on each hosted OS and CPU. Chocolatey and
   # WinGet are left out: their new versions wait for review.
@@ -705,38 +456,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-latest, channels: install-sh npm pypi cargo-binstall brew apt dnf apk docker }
-          - { os: ubuntu-24.04-arm, channels: install-sh npm pypi cargo-binstall apt dnf apk docker }
-          - { os: macos-latest, channels: install-sh npm pypi cargo-binstall brew }
-          - { os: macos-15-intel, channels: install-sh npm pypi cargo-binstall brew }
-          - { os: windows-latest, channels: install-ps1 scoop npm pypi }
-          - { os: windows-11-arm, channels: install-ps1 scoop npm pypi }
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
       - if: runner.os != 'Windows'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall
-      - if: matrix.os == 'ubuntu-latest'
-        run: echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
-      - if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # Hosted runners run as Administrator, which the Scoop installer refuses without -RunAsAdmin.
-          Invoke-Expression "& {$(Invoke-RestMethod https://get.scoop.sh)} -RunAsAdmin"
-          Join-Path $HOME 'scoop\shims' | Add-Content -LiteralPath $env:GITHUB_PATH
-      - if: runner.os != 'Windows'
-        # cargo-binstall looks the release up through the GitHub API, which rate-limits anonymous calls.
-        env:
+      - uses: ./.github/actions/xmtr-ci
+      # cargo-binstall looks the release up through the GitHub API, which rate-limits anonymous calls.
+      - env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: scripts/verify-release.sh "${GITHUB_REF_NAME#v}" ${{ matrix.channels }}
-      - if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/verify-release.ps1 $env:GITHUB_REF_NAME.TrimStart('v') ${{ matrix.channels }}
+        run: uv run xmtr-ci verify
