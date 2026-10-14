@@ -1,5 +1,4 @@
 import hashlib
-import platform
 import tempfile
 from pathlib import Path
 
@@ -31,8 +30,9 @@ def aport(release: str, out: Path) -> Path:
 
 def build(revision: str) -> None:
     release = version()
-    arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(platform.machine(), platform.machine())
-    with tempfile.TemporaryDirectory(prefix="xmtr-aport-") as directory:
+    scratch = ROOT / "target"
+    scratch.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="aport-", dir=scratch) as directory:
         work = Path(directory)
         tarball = work / f"xmtr-{release}.tar.gz"
         run(
@@ -42,18 +42,22 @@ def build(revision: str) -> None:
         )  # fmt: skip
         write_aport(release, tarball.read_bytes(), work / "testing" / "xmtr")
         script = f"""
-            apk add --quiet alpine-sdk atools
-            abuild-keygen -a -i -n -q
-            mkdir -p /var/cache/distfiles /aports
+            apk add --quiet alpine-sdk atools doas
+            adduser -D builder
+            addgroup builder abuild
+            echo 'permit nopass builder' > /etc/doas.d/builder.conf
+            mkdir -p /var/cache/distfiles
             cp /src/xmtr-{release}.tar.gz /var/cache/distfiles/
-            cp -R /src/testing /aports/
-            cd /aports/testing/xmtr
-            apkbuild-lint APKBUILD
-            abuild -F -r -P /packages
-            apk add --quiet --repository /packages/testing xmtr xmtr-doc
+            chgrp -R abuild /var/cache/distfiles
+            chmod -R g+w /var/cache/distfiles
+            cp -R /src/testing /home/builder/
+            chown -R builder /home/builder/testing
+            su builder -c 'abuild-keygen -a -i -n -q'
+            su builder -c 'cd ~/testing/xmtr && apkbuild-lint APKBUILD && abuild -r -P ~/packages'
+            find /home/builder/packages -name '*.apk'
+            apk add --quiet /home/builder/packages/testing/*/xmtr-*.apk
             xmtr --version | grep -Fx 'xmtr {release}'
             apk info --contents xmtr xmtr-doc
-            ls -l /packages/testing/{arch}
         """
         volume = f"{work}:/src:ro"
         run("docker", "run", "--rm", "--volume", volume, IMAGE, "sh", "-euc", script)
