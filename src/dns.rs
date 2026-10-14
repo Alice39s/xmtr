@@ -339,9 +339,9 @@ impl Dns {
 
     /// Adds reverse DNS names and origin AS numbers to hop addresses, waiting at most a few seconds.
     /// Private and other non-public addresses are only looked up in the system resolver, and only
-    /// for their names, so they are not sent to a public resolver. Returns how many addresses got no answer
-    /// in time.
-    pub fn annotate(&self, routes: &mut [Route]) -> usize {
+    /// for their names, so they are not sent to a public resolver. `progress` receives the answered and
+    /// total address counts as lookups finish. Returns how many addresses got no answer in time.
+    pub fn annotate(&self, routes: &mut [Route], progress: impl Fn(usize, usize)) -> usize {
         let mut addrs: Vec<IpAddr> = routes
             .iter()
             .flat_map(|route| route.hops.iter())
@@ -352,6 +352,7 @@ impl Dns {
         addrs.sort_unstable();
         addrs.dedup();
         let total = addrs.len();
+        progress(0, total);
 
         let mut names: HashMap<IpAddr, Names> = HashMap::new();
         self.runtime.block_on(async {
@@ -364,6 +365,7 @@ impl Dns {
                 while let Some(joined) = tasks.join_next().await {
                     if let Ok((addr, found)) = joined {
                         names.insert(addr, found);
+                        progress(names.len(), total);
                     }
                     if let Some(addr) = pending.next() {
                         tasks.spawn(lookup_names(self.resolver.clone(), addr));

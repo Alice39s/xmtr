@@ -183,6 +183,8 @@ Tracing needs raw sockets.
 5. Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. Private addresses are never sent to a resolver given with `--dns`.
 6. The routes are uploaded to `--api`, and xmtr prints the trace ID and the IPMap link. `--pin 2580` adds a four-digit PIN (digits 0-8, no 4) that viewers must enter. `--no-upload` keeps everything local. `--hide-origin` asks the gateway not to store the public address the upload came from; the first hops may still show the network.
 
+In a terminal, a panel below the prompt shows these steps as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. The panel is drawn on stderr and erased before the route tables and the link are printed. Ctrl-C stops the run and exits with status 130. `--quiet`, or stderr that is not a terminal, turns the panel off.
+
 ## DNS
 
 `--dns` selects the resolver for target names, the upload, reverse DNS and AS lookups.

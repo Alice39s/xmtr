@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, anyhow};
 use trippy_core::{Builder, Port, PortDirection, PrivilegeMode, Protocol, State};
 
+use crate::board::{Board, Stage};
 use crate::convergence::Convergence;
 use crate::model;
 use crate::plan::Job;
@@ -25,15 +26,6 @@ pub struct Settings {
     pub interval: Duration,
     pub max_ttl: u8,
     pub tcp_port: u16,
-}
-
-#[derive(Debug, Clone)]
-pub struct Progress {
-    pub label: String,
-    pub rounds: usize,
-    pub hops: usize,
-    pub reached: bool,
-    pub done: bool,
 }
 
 #[derive(Debug)]
@@ -201,7 +193,8 @@ fn trace(
     protocol: Protocol,
     slot: u16,
     settings: &Settings,
-    progress: &Mutex<Progress>,
+    board: &Board,
+    index: usize,
 ) -> Result<model::Route> {
     let started = SystemTime::now();
     let clock = Instant::now();
@@ -220,18 +213,10 @@ fn trace(
         let rounds = state.round_count(flow);
         let is_reached = reached(&state, job.addr);
         convergence.observe(rounds, responders(&state));
-        {
-            let mut current = progress
-                .lock()
-                .map_err(|_| anyhow!("progress lock poisoned"))?;
-            current.rounds = rounds;
-            current.hops = state
-                .hops()
-                .iter()
-                .filter(|hop| hop.total_recv() > 0)
-                .count();
-            current.reached = is_reached;
-        }
+        board.update(index, |row| {
+            row.rounds = rounds;
+            row.reached = is_reached;
+        });
         let finished = handle.is_finished();
         if finished
             || convergence.is_stable(settings.min_rounds, is_reached)
@@ -259,12 +244,7 @@ fn trace(
 
 /// Traces all jobs with up to `parallel` tracers at once. A job whose first protocol does not reach the
 /// target is retried with its fallback protocol on the same worker, and both routes are kept.
-pub fn run_all(
-    jobs: &[Job],
-    parallel: usize,
-    settings: &Settings,
-    progress: &[Mutex<Progress>],
-) -> Vec<Outcome> {
+pub fn run_all(jobs: &[Job], parallel: usize, settings: &Settings, board: &Board) -> Vec<Outcome> {
     let next = AtomicUsize::new(0);
     let slots = AtomicUsize::new(0);
     let outcomes = Mutex::new(Vec::new());
@@ -275,22 +255,22 @@ pub fn run_all(
                 loop {
                     let index = next.fetch_add(1, Ordering::SeqCst);
                     let Some(job) = jobs.get(index) else { break };
+                    let job_started = Instant::now();
                     let mut protocol = Some(job.protocol);
                     let mut first = true;
                     while let Some(current) = protocol.take() {
                         let slot =
                             u16::try_from(slots.fetch_add(1, Ordering::SeqCst) % 1000).unwrap_or(0);
                         let label = job_label(job, current);
-                        if let Ok(mut entry) = progress[index].lock() {
-                            *entry = Progress {
-                                label: label.clone(),
-                                rounds: 0,
-                                hops: 0,
-                                reached: false,
-                                done: false,
-                            };
-                        }
-                        let result = trace(job, current, slot, settings, &progress[index]);
+                        board.update(index, |row| {
+                            row.protocol = current;
+                            row.fallback = !first;
+                            row.stage = Stage::Tracing;
+                            row.rounds = 0;
+                            row.reached = false;
+                            row.started = Some(Instant::now());
+                        });
+                        let result = trace(job, current, slot, settings, board, index);
                         let retry = first && matches!(&result, Ok(route) if !route.reached);
                         if let Ok(mut list) = outcomes.lock() {
                             list.push(Outcome { label, result });
@@ -300,9 +280,10 @@ pub fn run_all(
                         }
                         first = false;
                     }
-                    if let Ok(mut entry) = progress[index].lock() {
-                        entry.done = true;
-                    }
+                    board.update(index, |row| {
+                        row.stage = Stage::Done;
+                        row.elapsed = job_started.elapsed();
+                    });
                 }
             });
         }
