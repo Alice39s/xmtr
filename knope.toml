@@ -1,0 +1,51 @@
+# Release configuration for knope (https://knope.tech).
+#
+# Describe a change:   knope document-change   (writes .changeset/<name>.md)
+# Preview a release:   knope release --dry-run
+# Release:             knope release           (bumps versions, writes CHANGELOG.md, commits, tags)
+# Publish:             git push --atomic origin main "v$(knope get-version)"
+#
+# The pushed tag starts .github/workflows/release.yml, which builds and publishes the release.
+
+[package]
+# Every crate in the workspace shares `workspace.package.version`.
+versioned_files = [
+  "Cargo.toml",
+  { path = "Cargo.toml", dependency = "xmtr-release" },
+  { path = "Cargo.lock", dependency = "xmtr" },
+  { path = "Cargo.lock", dependency = "xmtr-release" },
+  { path = "Cargo.lock", dependency = "xmtr-installer" },
+  { path = "README.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
+]
+changelog = "CHANGELOG.md"
+
+[changes]
+# Release notes come from change files only; commit messages stay free of changelog duty.
+ignore_conventional_commits = true
+
+[[workflows]]
+name = "document-change"
+
+[[workflows.steps]]
+type = "CreateChangeFile"
+
+[[workflows]]
+name = "release"
+
+[[workflows.steps]]
+type = "PrepareRelease"
+
+[[workflows.steps]]
+type = "Command"
+command = "git commit -m \"chore: release $version\""
+
+[[workflows.steps]]
+type = "Release"
+
+[[workflows]]
+name = "get-version"
+help_text = "Print the current version"
+
+[[workflows.steps]]
+type = "Command"
+command = "echo \"$version\""
