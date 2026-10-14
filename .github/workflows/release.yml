@@ -678,12 +678,21 @@ jobs:
         with:
           name: packages-chocolatey
           path: packages
-      # New versions wait for moderation before they appear on community.chocolatey.org.
+      # New versions wait for moderation before they appear on community.chocolatey.org. Until the
+      # package's first version is approved, the community repository accepts no other version, so the
+      # push is left to a release that follows the approval.
       - shell: pwsh
         env:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
         run: |
           $package = Get-ChildItem packages/*.nupkg
+          $approved = choco search xmtr --exact --limit-output --source https://community.chocolatey.org/api/v2/
+          # Exit code 2 is "nothing found" when enhanced exit codes are on.
+          if ($LASTEXITCODE -notin 0, 2) { exit $LASTEXITCODE }
+          if (-not $approved) {
+            Write-Output "::warning::xmtr has no approved version on community.chocolatey.org yet, so $($package.Name) is not pushed"
+            exit 0
+          }
           choco push $package.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
