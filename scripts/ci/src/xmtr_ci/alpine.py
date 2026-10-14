@@ -2,8 +2,7 @@ import hashlib
 import tempfile
 from pathlib import Path
 
-import httpx
-
+from xmtr_ci import web
 from xmtr_ci.project import REPO, ROOT, version
 from xmtr_ci.shell import run
 from xmtr_ci.templates import render
@@ -24,8 +23,7 @@ def write_aport(release: str, tarball: bytes, out: Path) -> Path:
 
 
 def aport(release: str, out: Path) -> Path:
-    response = httpx.get(tarball_url(release), follow_redirects=True, timeout=120)
-    return write_aport(release, response.raise_for_status().content, out)
+    return write_aport(release, web.download(tarball_url(release)), out)
 
 
 def build(revision: str) -> None:

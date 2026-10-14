@@ -4,8 +4,7 @@ import platform
 import tarfile
 from pathlib import Path
 
-import httpx
-
+from xmtr_ci import web
 from xmtr_ci.project import ROOT
 
 NFPM_VERSION = "2.48.0"
@@ -25,7 +24,7 @@ def nfpm() -> Path:
     system = platform.system()
     name = f"nfpm_{NFPM_VERSION}_{system}_{machine}.tar.gz"
     url = f"https://github.com/goreleaser/nfpm/releases/download/v{NFPM_VERSION}/{name}"
-    data = httpx.get(url, follow_redirects=True, timeout=60).raise_for_status().content
+    data = web.download(url)
     if hashlib.sha256(data).hexdigest() != NFPM_SHA256[system, machine]:
         message = f"{name} does not match its pinned SHA-256"
         raise RuntimeError(message)

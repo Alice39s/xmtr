@@ -5,29 +5,18 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-import httpx
-
-from xmtr_ci import github
+from xmtr_ci import github, web
 from xmtr_ci.checksums import read_sums
 from xmtr_ci.packages import managers
 from xmtr_ci.project import AUTHOR, EMAIL, ROOT, download_url, prerelease
 from xmtr_ci.shell import attempt, output, run
 
-USER_AGENT = f"xmtr release workflow ({EMAIL})"
 CRATES = ("xmtr-release", "xmtr")
-
-
-def published(url: str) -> bool:
-    response = httpx.get(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
-    if response.status_code == httpx.codes.NOT_FOUND:
-        return False
-    response.raise_for_status()
-    return True
 
 
 def crates(version: str) -> None:
     for crate in CRATES:
-        if published(f"https://crates.io/api/v1/crates/{crate}/{version}"):
+        if web.exists(f"https://crates.io/api/v1/crates/{crate}/{version}"):
             print(f"{crate} {version} is already on crates.io")
         else:
             run("cargo", "publish", "--locked", "--package", crate, cwd=ROOT)
@@ -49,15 +38,14 @@ def npm(version: str, packages: Path) -> None:
     ]
     for tarball in tarballs:
         name = npm_name(tarball)
-        if published(f"https://registry.npmjs.org/{quote(name, safe='@')}/{version}"):
+        if web.exists(f"https://registry.npmjs.org/{quote(name, safe='@')}/{version}"):
             print(f"{name} {version} is already on npm")
         else:
             run("npm", "publish", tarball.resolve(), "--access", "public", "--tag", tag)
 
 
 def sums(tag: str) -> dict[str, str]:
-    response = httpx.get(download_url(tag, "SHA256SUMS"), follow_redirects=True)
-    return read_sums(response.raise_for_status().text)
+    return read_sums(web.download(download_url(tag, "SHA256SUMS")).decode())
 
 
 def commit(checkout: Path, files: dict[str, str], message: str, branch: str) -> None:
@@ -131,7 +119,7 @@ def aur(tag: str, out: Path, *, push: bool) -> None:
 
 def winget_listed() -> None:
     url = "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/Alice39s/xmtr"
-    github.set_output(listed=str(published(url)).lower())
+    github.set_output(listed=str(web.exists(url)).lower())
 
 
 def chocolatey(packages: Path, api_key: str) -> None:

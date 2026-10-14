@@ -27,7 +27,7 @@ def runner(target: Target, stage: Path) -> list[str]:
                 "--entrypoint", "/entrypoint_root.sh", f"termux/termux-docker:{image}",
             ]  # fmt: skip
         case VmSmoke(vm=host):
-            return ["ssh", host]
+            return ["ssh", "-o", "LogLevel=ERROR", host]
 
 
 def elevation(target: Target) -> list[str]:

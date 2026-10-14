@@ -14,7 +14,9 @@ def test_runner_prefixes() -> None:
     assert runner(target("s390x-unknown-linux-gnu"), stage) == snapshot(
         ["qemu-s390x", "-L", "/usr/s390x-linux-gnu"]
     )
-    assert runner(target("x86_64-unknown-freebsd"), stage) == ["ssh", "freebsd"]
+    assert runner(target("x86_64-unknown-freebsd"), stage) == snapshot(
+        ["ssh", "-o", "LogLevel=ERROR", "freebsd"]
+    )
     assert runner(target("armv7-linux-androideabi"), stage) == snapshot(
         [
             "docker",
