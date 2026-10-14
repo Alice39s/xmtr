@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
+use ratatui::crossterm::style::Stylize;
 
 use crate::board::Board;
 use crate::cli::{Cli, Command, SelfCommand};
@@ -170,18 +171,60 @@ fn live_options(cli: &Cli) -> Result<live::Options> {
     })
 }
 
+/// Hands the report to the live view, which prints it as the result panel.
+fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
+    let (upload, code) = match report.upload {
+        None => (live::Upload::Skipped, ExitCode::SUCCESS),
+        Some(Ok(accepted)) => (live::Upload::Accepted(accepted), ExitCode::SUCCESS),
+        Some(Err(error)) => (
+            live::Upload::Failed(format!("{error:#}")),
+            ExitCode::from(2),
+        ),
+    };
+    let link_below = live.finish(Some(live::Summary {
+        routes: report.body.routes.clone(),
+        upload,
+        skipped: report.skipped,
+        failures: report.failures,
+        unanswered: report.unanswered,
+    }))?;
+    if let Some(link) = link_below {
+        // Plain text the terminal can wrap, beside the panel on stderr.
+        eprintln!("{}", link.as_str().cyan().underlined());
+    }
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&report.body)?);
+    }
+    Ok(code)
+}
+
 fn run(cli: &Cli) -> Result<ExitCode> {
     let board = Arc::new(Board::new(&cli.targets));
     let live = if !cli.quiet && std::io::stderr().is_terminal() {
-        Some(Live::start(Arc::clone(&board), live_options(cli)?))
+        match Live::start(Arc::clone(&board), live_options(cli)?) {
+            Ok(live) => Some(live),
+            Err(error) => {
+                eprintln!("note: showing results without the live panel: {error:#}");
+                None
+            }
+        }
     } else {
         None
     };
     let result = work(cli, &board);
-    if let Some(live) = live {
-        live.finish()?;
+    let Some(live) = live else {
+        return report(cli, result?);
+    };
+    // The result panel goes to stderr, so it replaces the tables only where they would have been
+    // shown in the same terminal; `--json` already puts them on stderr.
+    let in_panel = cli.json || std::io::stdout().is_terminal();
+    match result {
+        Ok(report) if in_panel && !report.body.routes.is_empty() => show_result(cli, live, report),
+        result => {
+            live.finish(None)?;
+            report(cli, result?)
+        }
     }
-    report(cli, result?)
 }
 
 fn main() -> ExitCode {

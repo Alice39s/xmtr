@@ -14,10 +14,10 @@
 
 <a href="https://xmsl.dev/ipmap?plat=xmtr&trace-id=103115083070058496-nBjPEnny"><img src=".github/assets/ipmap-demo.png" alt="IPMap showing a route from Rennes through London, the United States and Tokyo to Guam"></a>
 
-xmtr prints each route and the link to its map:
+In a terminal, xmtr shows its progress and the result in a panel (see [How a run works](#how-a-run-works)). Piped or redirected, it prints each route as plain text, followed by the link to its map:
 
 ```text
-$ sudo xmtr --min-rounds 20 121.55.201.201
+$ sudo xmtr --min-rounds 20 121.55.201.201 | cat
 121.55.201.201 -> 121.55.201.201 [ICMP IPv4] 20 rounds, 20.4s, reached
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ Hop   Host                                                               ASN        Loss%   Snt    Last     Avg    Best    Wrst   StDev │
@@ -183,7 +183,7 @@ Tracing needs raw sockets.
 5. Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. Private addresses are never sent to a resolver given with `--dns`.
 6. The routes are uploaded to `--api`, and xmtr prints the trace ID and the IPMap link. `--pin 2580` adds a four-digit PIN (digits 0-8, no 4) that viewers must enter. `--no-upload` keeps everything local. `--hide-origin` asks the gateway not to store the public address the upload came from; the first hops may still show the network.
 
-In a terminal, a panel below the prompt shows these steps as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. The panel is drawn on stderr and erased before the route tables and the link are printed. Ctrl-C stops the run and exits with status 130. `--quiet`, or stderr that is not a terminal, turns the panel off.
+In a terminal, a panel below the prompt numbers these steps (1. Resolve, 2. Trace, 3. Lookup, 4. Upload, 5. Result) and shows them as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. When the run ends, the panel turns into the result: the IPMap link first, then any notes, then each route as a table, with runs of silent hops folded into one line. The panel is drawn on stderr; when stdout is not a terminal, the panel is erased and the tables and link are printed on stdout as shown above. Ctrl-C stops the run and exits with status 130. `--quiet`, stderr that is not a terminal, or a terminal that does not report its cursor position turns the panel off.
 
 ## DNS
 

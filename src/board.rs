@@ -14,6 +14,7 @@ pub enum Phase {
     Trace,
     Lookup,
     Upload,
+    Result,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
