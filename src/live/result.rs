@@ -517,7 +517,7 @@ mod tests {
     use crate::live::theme::panel_block;
     use crate::model::Host;
 
-    const URL: &str = "https://xmsl.dev/ipmap?plat=xmtr&trace-id=103115083070058496-nBjPEnny";
+    const URL: &str = "https://xmsl.dev/xmtr/103115083070058496-nBjPEnny";
 
     fn hop(ttl: u8, hosts: Vec<Host>, loss: f64) -> Hop {
         Hop {
@@ -633,8 +633,9 @@ mod tests {
 
     #[test]
     fn narrow_terminals_drop_columns_and_move_the_link_out() {
-        let (screen, rendered) = draw(&summary(accepted()), 64);
-        assert_eq!(rendered.width, 64);
+        // The callout and the 49-character link need 52 columns inside the panel border.
+        let (screen, rendered) = draw(&summary(accepted()), 53);
+        assert_eq!(rendered.width, 53);
         assert!(!screen.contains("StDev"), "{screen}");
         assert!(screen.contains("Avg"), "{screen}");
         assert!(screen.contains("printed below"), "{screen}");
