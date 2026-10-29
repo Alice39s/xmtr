@@ -22,7 +22,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use ratatui::backend::{CrosstermBackend, IntoCrossterm};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
@@ -66,8 +66,17 @@ enum Kind {
     Plain,
 }
 
-/// The view for `choice`; `auto` takes the panel when the terminal is big enough, the line view on
-/// smaller terminals and plain lines when stderr is not a terminal or `TERM=dumb`.
+/// The panel finds its place on screen by asking the terminal for the cursor position. On Unix
+/// crossterm writes that query to stdout, so with stdout redirected it would land in the output and
+/// get no answer. The panel needs stdout on the terminal on every platform, so a redirected run
+/// shows the same view everywhere.
+fn stdout_on_terminal() -> bool {
+    io::stdout().is_terminal()
+}
+
+/// The view for `choice`; `auto` takes the panel when stdout is on the terminal and the terminal is
+/// big enough, the line view otherwise, and plain lines when stderr is not a terminal or
+/// `TERM=dumb`.
 fn pick(choice: ProgressChoice) -> Kind {
     match choice {
         ProgressChoice::Panel => Kind::Panel,
@@ -78,7 +87,11 @@ fn pick(choice: ProgressChoice) -> Kind {
                 return Kind::Plain;
             }
             match terminal::size() {
-                Ok((width, height)) if width >= PANEL_MIN_WIDTH && height >= PANEL_MIN_HEIGHT => {
+                Ok((width, height))
+                    if width >= PANEL_MIN_WIDTH
+                        && height >= PANEL_MIN_HEIGHT
+                        && stdout_on_terminal() =>
+                {
                     Kind::Panel
                 }
                 _ => Kind::Line,
@@ -96,8 +109,8 @@ enum View {
 impl Live {
     /// Starts showing `board` on stderr in the view `progress` asks for. In the panel and line
     /// views Ctrl-C erases the live output and exits with status 130. Fails when a view chosen
-    /// explicitly cannot run, for example a panel on a terminal that does not report the cursor
-    /// position; `auto` then falls back to the line view.
+    /// explicitly cannot run, for example a panel with stdout redirected or on a terminal that does
+    /// not report the cursor position; `auto` then falls back to the line view.
     pub fn start(
         board: Arc<Board>,
         options: Options,
@@ -105,6 +118,11 @@ impl Live {
         theme: ThemeChoice,
     ) -> Result<Self> {
         let kind = pick(progress);
+        if kind == Kind::Panel && !stdout_on_terminal() {
+            bail!(
+                "the panel needs stdout on the terminal; --progress line works with redirected output"
+            );
+        }
         let raw = kind != Kind::Plain && io::stderr().is_terminal();
         if kind != Kind::Plain {
             // Asks the terminal for its background, which needs the terminal to itself.

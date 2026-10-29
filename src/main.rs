@@ -263,11 +263,12 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     let Some(live) = live else {
         return report(cli, result?);
     };
-    // The result panel goes to stderr, so it replaces the tables only where they would have been
-    // shown in the same terminal; `--json` already puts them on stderr.
-    let in_panel = live.shows_result() && (cli.json || std::io::stdout().is_terminal());
+    // The panel runs only with stdout on the terminal, so its result replaces the tables printed
+    // there; with `--json` the document still follows on stdout.
     match result {
-        Ok(report) if in_panel && !report.body.routes.is_empty() => show_result(cli, live, report),
+        Ok(report) if live.shows_result() && !report.body.routes.is_empty() => {
+            show_result(cli, live, report)
+        }
         result => {
             live.finish(None)?;
             report(cli, result?)
