@@ -232,7 +232,7 @@ impl LineView {
     ) -> io::Result<()> {
         let width = columns();
         let mut out = io::stderr().lock();
-        for event in events::between(self.before.as_ref(), state) {
+        for event in events::between(self.before.as_ref(), state, options) {
             queue_spans(&mut out, event_line(&event, state, options, width))?;
             queue!(out, Print("\r\n"))?;
         }

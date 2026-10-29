@@ -327,17 +327,27 @@ fn draw_until(
         let elapsed = started.elapsed().as_secs_f64();
         view.draw(&state, options, elapsed, tick)?;
         match finished.try_recv() {
-            Ok(Some(summary)) => {
+            Ok(summary) => {
+                // The run is over: everything it did is on the board now, including changes made
+                // after the snapshot above.
+                state = board.snapshot();
                 if let View::Panel(panel) = &mut view {
                     state.phase = Phase::Result;
-                    let link = panel.print_result(&summary, &state, options, elapsed)?;
+                    let link = match summary {
+                        Some(summary) => panel.print_result(&summary, &state, options, elapsed)?,
+                        None => None,
+                    };
                     panel.close()?;
                     return Ok(link);
                 }
+                // Once with the board as it ended, then once more to close the last step.
+                view.draw(&state, options, elapsed, tick)?;
+                state.phase = Phase::Result;
+                view.draw(&state, options, elapsed, tick)?;
                 view.close()?;
                 return Ok(None);
             }
-            Ok(None) | Err(TryRecvError::Disconnected) => {
+            Err(TryRecvError::Disconnected) => {
                 view.close()?;
                 return Ok(None);
             }

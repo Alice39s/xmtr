@@ -55,22 +55,30 @@ pub const fn label(phase: Phase) -> &'static str {
     }
 }
 
-/// What happened between two snapshots of the board. `before` is `None` for the first snapshot.
-pub fn between(before: Option<&State>, after: &State) -> Vec<Event> {
-    let mut events = Vec::new();
-    let Some(before) = before else {
-        events.push(Event::Step(after.phase));
-        return events;
-    };
-    if before.phase == Phase::Lookup && after.phase != Phase::Lookup {
-        let (answered, total) = after.lookup;
-        events.push(Event::Lookup { answered, total });
-    }
+/// What happened between two snapshots of the board, in the order it happened. `before` is `None`
+/// for the first snapshot. Several steps can pass between two snapshots; each one still gets its
+/// line, and a lookup that ended gets its summary. An `after` in `Phase::Result` marks the end of
+/// the run: it closes a running lookup but starts no step.
+pub fn between(before: Option<&State>, after: &State, options: &Options) -> Vec<Event> {
+    let from = before.map(|before| before.phase);
+    let ended = after.phase == Phase::Result;
+    let started =
+        |step: Phase| !ended && from.is_none_or(|from| step > from) && step <= after.phase;
+    // The lookup ran either when `before` was taken or entirely between the two snapshots.
+    let lookup_ended = after.phase > Phase::Lookup
+        && (from == Some(Phase::Lookup)
+            || (!ended && from.is_none_or(|from| from < Phase::Lookup)));
+    let steps = steps(options);
+    let mut events: Vec<Event> = steps
+        .iter()
+        .filter(|step| **step <= Phase::Trace && started(**step))
+        .map(|step| Event::Step(*step))
+        .collect();
     // Before the trace starts the rows are the targets, not the routes, so nothing is compared.
     if after.phase >= Phase::Trace {
-        let traced = before.phase >= Phase::Trace;
+        let traced = before.filter(|before| before.phase >= Phase::Trace);
         for (index, row) in after.rows.iter().enumerate() {
-            let old = traced.then(|| before.rows.get(index)).flatten();
+            let old = traced.and_then(|before| before.rows.get(index));
             if row.fallback && !old.is_some_and(|old| old.fallback) {
                 events.push(Event::Fallback(row.clone()));
             }
@@ -79,8 +87,14 @@ pub fn between(before: Option<&State>, after: &State) -> Vec<Event> {
             }
         }
     }
-    if after.phase != before.phase && after.phase != Phase::Result {
-        events.push(Event::Step(after.phase));
+    for step in steps.into_iter().filter(|step| *step > Phase::Trace) {
+        if started(step) {
+            events.push(Event::Step(step));
+        }
+        if step == Phase::Lookup && lookup_ended {
+            let (answered, total) = after.lookup;
+            events.push(Event::Lookup { answered, total });
+        }
     }
     events
 }
@@ -200,33 +214,81 @@ mod tests {
         }
     }
 
+    const SUMMARY: Event = Event::Lookup {
+        answered: 3,
+        total: 4,
+    };
+
     #[test]
     fn reports_steps_fallbacks_and_finished_routes_once() {
+        let options = options();
         let start = state(Phase::Resolve, vec![row(Stage::Resolving, false)]);
-        assert_eq!(between(None, &start), [Event::Step(Phase::Resolve)]);
+        assert_eq!(
+            between(None, &start, &options),
+            [Event::Step(Phase::Resolve)]
+        );
         let tracing = state(Phase::Trace, vec![row(Stage::Tracing, false)]);
-        assert_eq!(between(Some(&start), &tracing), [Event::Step(Phase::Trace)]);
+        assert_eq!(
+            between(Some(&start), &tracing, &options),
+            [Event::Step(Phase::Trace)]
+        );
         let fallback = state(Phase::Trace, vec![row(Stage::Done, true)]);
         assert_eq!(
-            between(Some(&tracing), &fallback),
+            between(Some(&tracing), &fallback, &options),
             [
                 Event::Fallback(row(Stage::Done, true)),
                 Event::Route(row(Stage::Done, true))
             ]
         );
-        assert!(between(Some(&fallback), &fallback).is_empty());
+        assert!(between(Some(&fallback), &fallback, &options).is_empty());
         let lookup = state(Phase::Lookup, vec![row(Stage::Done, true)]);
         let upload = state(Phase::Upload, vec![row(Stage::Done, true)]);
         assert_eq!(
-            between(Some(&lookup), &upload),
+            between(Some(&lookup), &upload, &options),
+            [SUMMARY, Event::Step(Phase::Upload)]
+        );
+    }
+
+    #[test]
+    fn steps_passed_between_two_snapshots_keep_their_lines() {
+        let options = options();
+        let tracing = state(Phase::Trace, vec![row(Stage::Tracing, false)]);
+        let upload = state(Phase::Upload, vec![row(Stage::Done, false)]);
+        assert_eq!(
+            between(Some(&tracing), &upload, &options),
             [
-                Event::Lookup {
-                    answered: 3,
-                    total: 4
-                },
+                Event::Route(row(Stage::Done, false)),
+                Event::Step(Phase::Lookup),
+                SUMMARY,
                 Event::Step(Phase::Upload)
             ]
         );
+        let start = state(Phase::Resolve, vec![row(Stage::Resolving, false)]);
+        let traced = state(Phase::Lookup, vec![row(Stage::Done, false)]);
+        assert_eq!(
+            between(Some(&start), &traced, &options),
+            [
+                Event::Step(Phase::Trace),
+                Event::Route(row(Stage::Done, false)),
+                Event::Step(Phase::Lookup)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_end_of_the_run_closes_the_lookup() {
+        let lookup = state(Phase::Lookup, vec![row(Stage::Done, false)]);
+        let result = state(Phase::Result, vec![row(Stage::Done, false)]);
+        assert_eq!(between(Some(&lookup), &result, &options()), [SUMMARY]);
+        let no_lookup = Options {
+            lookup: false,
+            upload: None,
+            ..options()
+        };
+        let tracing = state(Phase::Trace, vec![row(Stage::Done, false)]);
+        assert!(between(Some(&tracing), &result, &no_lookup).is_empty());
+        // A run that ends before its lookup starts has nothing to close.
+        assert!(between(Some(&tracing), &result, &options()).is_empty());
     }
 
     #[test]
