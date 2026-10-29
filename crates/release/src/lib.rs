@@ -143,8 +143,20 @@ pub fn fetch_verified(agent: &Agent, tag: &str, file: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Leading bytes of an executable for this platform: PE, Mach-O (64-bit or universal) or ELF.
+const EXE_MAGIC: &[&[u8]] = if cfg!(windows) {
+    &[b"MZ".as_slice()]
+} else if cfg!(target_os = "macos") {
+    &[
+        [0xcf, 0xfa, 0xed, 0xfe].as_slice(),
+        [0xca, 0xfe, 0xba, 0xbe].as_slice(),
+    ]
+} else {
+    &[b"\x7fELF".as_slice()]
+};
+
 /// Reads an archive entry that declares `size` bytes, rejecting it when the header or the
-/// decompressed data exceeds `MAX_ASSET_BYTES`.
+/// decompressed data exceeds `MAX_ASSET_BYTES` or the data is not an executable for this platform.
 fn read_binary(entry: impl Read, size: u64) -> Result<Vec<u8>> {
     let too_large = || {
         anyhow!(
@@ -163,6 +175,9 @@ fn read_binary(entry: impl Read, size: u64) -> Result<Vec<u8>> {
         .context("reading the xmtr binary")?;
     if binary.len() as u64 > MAX_ASSET_BYTES {
         return Err(too_large());
+    }
+    if !EXE_MAGIC.iter().any(|magic| binary.starts_with(magic)) {
+        bail!("{} in the archive is not an executable", exe_name());
     }
     Ok(binary)
 }
@@ -188,6 +203,9 @@ pub fn extract_binary(archive: &[u8]) -> Result<Vec<u8>> {
             .file_name()
             .is_some_and(|name| name == exe_name())
         {
+            if !entry.header().entry_type().is_file() {
+                bail!("{} in the archive is not a regular file", exe_name());
+            }
             let size = entry.size();
             return read_binary(entry, size);
         }
@@ -366,18 +384,29 @@ mod tests {
         );
     }
 
+    /// `size` bytes that start like an executable for this platform.
+    fn executable(size: u64) -> impl Read {
+        EXE_MAGIC[0].chain(std::io::repeat(0)).take(size)
+    }
+
     #[cfg(not(windows))]
-    fn binary_archive(size: u64) -> Vec<u8> {
+    fn tar_archive(entry_type: tar::EntryType, size: u64) -> Vec<u8> {
         let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         let mut archive = tar::Builder::new(gzip);
         let mut header = tar::Header::new_gnu();
+        header.set_entry_type(entry_type);
         header.set_size(size);
         header.set_mode(0o755);
         header.set_cksum();
         archive
-            .append_data(&mut header, exe_name(), std::io::repeat(0).take(size))
+            .append_data(&mut header, exe_name(), executable(size))
             .unwrap();
         archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[cfg(not(windows))]
+    fn binary_archive(size: u64) -> Vec<u8> {
+        tar_archive(tar::EntryType::Regular, size)
     }
 
     #[cfg(windows)]
@@ -390,13 +419,35 @@ mod tests {
                     .compression_method(zip::CompressionMethod::Deflated),
             )
             .unwrap();
-        std::io::copy(&mut std::io::repeat(0).take(size), &mut archive).unwrap();
+        std::io::copy(&mut executable(size), &mut archive).unwrap();
         archive.finish().unwrap().into_inner()
     }
 
     #[test]
     fn extracts_a_small_binary() {
-        assert_eq!(extract_binary(&binary_archive(32)).unwrap(), vec![0; 32]);
+        let mut expected = Vec::new();
+        executable(32).read_to_end(&mut expected).unwrap();
+        assert_eq!(extract_binary(&binary_archive(32)).unwrap(), expected);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rejects_an_entry_that_is_not_a_regular_file() {
+        for entry_type in [tar::EntryType::Directory, tar::EntryType::Symlink] {
+            let error = extract_binary(&tar_archive(entry_type, 0)).unwrap_err();
+            assert!(
+                error.to_string().contains("not a regular file"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_data_that_is_not_an_executable() {
+        for data in [&b""[..], b"<html>not found</html>"] {
+            let error = read_binary(data, data.len() as u64).unwrap_err();
+            assert!(error.to_string().contains("not an executable"), "{error:#}");
+        }
     }
 
     #[test]
