@@ -78,6 +78,19 @@ fn gateway_addrs(uri: &Uri, dns: &Dns) -> Result<Vec<SocketAddr>> {
         .collect())
 }
 
+/// Gateway text with control characters replaced, so a reply cannot send escape sequences to the terminal.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                char::REPLACEMENT_CHARACTER
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// Sends the routes to the gateway and returns the stored trace ID, view key and IPMap link.
 pub fn upload(api: &str, body: &Upload, dns: &Dns) -> Result<UploadAccepted> {
     let url = format!("{}/api/v1/traces", api.trim_end_matches('/'));
@@ -87,14 +100,20 @@ pub fn upload(api: &str, body: &Upload, dns: &Dns) -> Result<UploadAccepted> {
         .with_context(|| format!("uploading to {url}"))?;
     let status = response.status();
     if status.is_success() {
-        return response
+        let accepted = response
             .body_mut()
             .read_json::<UploadAccepted>()
-            .context("reading upload response");
+            .context("reading upload response")?;
+        return Ok(UploadAccepted {
+            id: printable(&accepted.id),
+            url: printable(&accepted.url),
+            ..accepted
+        });
     }
     let problem = response.body_mut().read_json::<Problem>().ok();
     let reason = problem
         .and_then(|problem| problem.detail.or(problem.title))
+        .map(|reason| printable(&reason))
         .unwrap_or_else(|| {
             status
                 .canonical_reason()
@@ -126,5 +145,17 @@ mod tests {
             );
             agent(url, &dns).unwrap();
         }
+    }
+
+    #[test]
+    fn replaces_control_characters_in_gateway_text() {
+        assert_eq!(
+            printable("bad\u{1b}]0;title\u{7}\u{1b}[2J\ntext"),
+            "bad\u{fffd}]0;title\u{fffd}\u{fffd}[2J\u{fffd}text"
+        );
+        assert_eq!(
+            printable("https://xmsl.dev/ipmap?trace-id=1"),
+            "https://xmsl.dev/ipmap?trace-id=1"
+        );
     }
 }
