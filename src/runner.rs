@@ -313,6 +313,7 @@ mod tests {
             (Duration::from_secs(1), Duration::from_millis(100), 11),
             (Duration::from_millis(1001), Duration::from_millis(100), 12),
             (Duration::from_secs(1), Duration::from_secs(2), 2),
+            (Duration::MAX, Duration::MAX, 2),
         ] {
             assert_eq!(tracer_rounds(&settings(limit, interval)), expected);
         }
@@ -321,7 +322,9 @@ mod tests {
     #[test]
     fn round_budget_caps_durations_larger_than_usize_rounds() {
         for limit in [
+            // Exceeds usize only on 32-bit targets.
             Duration::from_secs(u64::from(u32::MAX)),
+            // Exceeds usize on 64-bit targets too.
             Duration::from_secs(u64::MAX),
             Duration::MAX,
         ] {
@@ -330,6 +333,5 @@ mod tests {
                 30
             );
         }
-        assert_eq!(tracer_rounds(&settings(Duration::MAX, Duration::MAX)), 2);
     }
 }
