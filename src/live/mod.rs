@@ -1,21 +1,29 @@
-//! Live status drawn on stderr while xmtr works, in an inline viewport below the prompt: a rounded
-//! panel with numbered steps, one progress bar per route and the progress of the current step. When
-//! the run ends, the panel gives way to the result panel, or is erased when the caller prints the
-//! results itself.
+//! Live status drawn on stderr while xmtr works, in one of three views:
+//!
+//! - the panel: an inline viewport below the prompt with numbered steps, one progress bar per route
+//!   and the progress of the current step; when the run ends it gives way to the result panel, or is
+//!   erased when the caller prints the results itself;
+//! - the line view, for terminals too small for the panel or without cursor position reports:
+//!   finished steps and routes as single lines and one status line redrawn in place;
+//! - the plain view, for pipes, logs and `TERM=dumb`: one tagged text line per step and route.
 
+mod events;
+mod line;
+mod plain;
 mod progress;
 mod result;
 mod steps;
 mod theme;
 
-use std::io::{self, Stderr};
+use std::env;
+use std::io::{self, IsTerminal, Stderr};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{CrosstermBackend, IntoCrossterm};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::crossterm::{cursor, execute, terminal};
@@ -23,11 +31,18 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
+use self::line::LineView;
+use self::plain::PlainView;
 pub use self::result::{Summary, Upload};
 use crate::board::{Board, Phase, State};
+use crate::cli::{ProgressChoice, ThemeChoice};
 
 const FRAME: Duration = Duration::from_millis(80);
 const MAX_ROUTE_ROWS: u16 = 12;
+/// The smallest terminal the panel is drawn in: a route row without its bar, inside the borders.
+const PANEL_MIN_WIDTH: u16 = 44;
+/// The panel chrome, one route row and the row the cursor returns to.
+const PANEL_MIN_HEIGHT: u16 = progress::CHROME_ROWS + 2;
 
 /// What the panel shows besides the board.
 #[derive(Debug, Clone)]
@@ -41,22 +56,80 @@ pub struct Options {
 pub struct Live {
     done: Sender<Option<Summary>>,
     handle: JoinHandle<Result<Option<String>>>,
+    panel: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Panel,
+    Line,
+    Plain,
+}
+
+/// The view for `choice`; `auto` takes the panel when the terminal is big enough, the line view on
+/// smaller terminals and plain lines when stderr is not a terminal or `TERM=dumb`.
+fn pick(choice: ProgressChoice) -> Kind {
+    match choice {
+        ProgressChoice::Panel => Kind::Panel,
+        ProgressChoice::Line => Kind::Line,
+        ProgressChoice::Plain => Kind::Plain,
+        ProgressChoice::Auto => {
+            if !io::stderr().is_terminal() || env::var("TERM").is_ok_and(|term| term == "dumb") {
+                return Kind::Plain;
+            }
+            match terminal::size() {
+                Ok((width, height)) if width >= PANEL_MIN_WIDTH && height >= PANEL_MIN_HEIGHT => {
+                    Kind::Panel
+                }
+                _ => Kind::Line,
+            }
+        }
+    }
+}
+
+enum View {
+    Panel(Panel),
+    Line(LineView),
+    Plain(PlainView),
 }
 
 impl Live {
-    /// Starts drawing `board` on stderr. Ctrl-C erases the panel and exits with status 130. Fails
-    /// when the terminal cannot host the panel, for example when it does not report the cursor
-    /// position.
-    pub fn start(board: Arc<Board>, options: Options) -> Result<Self> {
-        // Raw mode keeps typed keys from scribbling over the panel; Ctrl-C then arrives as a key.
-        terminal::enable_raw_mode().context("switching the terminal to raw mode")?;
-        let panel = match Panel::open(route_rows(board.snapshot().rows.len())) {
-            Ok(panel) => panel,
-            Err(error) => {
-                restore();
-                return Err(error);
-            }
+    /// Starts showing `board` on stderr in the view `progress` asks for. In the panel and line
+    /// views Ctrl-C erases the live output and exits with status 130. Fails when a view chosen
+    /// explicitly cannot run, for example a panel on a terminal that does not report the cursor
+    /// position; `auto` then falls back to the line view.
+    pub fn start(
+        board: Arc<Board>,
+        options: Options,
+        progress: ProgressChoice,
+        theme: ThemeChoice,
+    ) -> Result<Self> {
+        let kind = pick(progress);
+        let raw = kind != Kind::Plain && io::stderr().is_terminal();
+        if kind != Kind::Plain {
+            // Asks the terminal for its background, which needs the terminal to itself.
+            theme::select(theme);
+        }
+        if raw {
+            // Raw mode keeps typed keys from scribbling over the view; Ctrl-C then arrives as a key.
+            terminal::enable_raw_mode().context("switching the terminal to raw mode")?;
+        }
+        let view = match kind {
+            Kind::Panel => match Panel::open(route_rows(board.snapshot().rows.len())) {
+                Ok(panel) => View::Panel(panel),
+                Err(_) if progress == ProgressChoice::Auto => View::Line(LineView::default()),
+                Err(error) => {
+                    restore();
+                    return Err(error);
+                }
+            },
+            Kind::Line => View::Line(LineView::default()),
+            Kind::Plain => View::Plain(PlainView::new()),
         };
+        if matches!(view, View::Line(_)) {
+            execute!(io::stderr(), cursor::Hide)?;
+        }
+        let panel = matches!(view, View::Panel(_));
         let previous_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             restore();
@@ -64,11 +137,22 @@ impl Live {
         }));
         let (done, finished) = mpsc::channel();
         let handle = thread::spawn(move || {
-            let result = draw_until(panel, &board, &options, &finished);
-            restore();
+            let result = draw_until(view, raw, &board, &options, &finished);
+            if raw {
+                restore();
+            }
             result
         });
-        Ok(Self { done, handle })
+        Ok(Self {
+            done,
+            handle,
+            panel,
+        })
+    }
+
+    /// True when the view shows the result panel; otherwise the caller prints the results.
+    pub const fn shows_result(&self) -> bool {
+        self.panel
     }
 
     /// Ends the live view: with a summary the result panel takes its place, without one it is
@@ -81,6 +165,11 @@ impl Live {
             .join()
             .map_err(|_| anyhow::anyhow!("the live view panicked"))?
     }
+}
+
+/// The accent color of the palette in use, for text printed beside the panel.
+pub fn accent() -> ratatui::crossterm::style::Color {
+    theme::palette().accent.into_crossterm()
 }
 
 type Term = Terminal<CrosstermBackend<Stderr>>;
@@ -199,8 +288,34 @@ fn ctrl_c_pressed() -> Result<bool> {
     Ok(false)
 }
 
+impl View {
+    fn draw(&mut self, state: &State, options: &Options, elapsed: f64, tick: usize) -> Result<()> {
+        match self {
+            Self::Panel(panel) => {
+                let rows = route_rows(state.rows.len());
+                if rows != panel.rows {
+                    panel.close()?;
+                    *panel = Panel::open(rows)?;
+                }
+                panel.draw(state, options, elapsed, tick)
+            }
+            Self::Line(line) => Ok(line.draw(state, options, elapsed, tick)?),
+            Self::Plain(plain) => Ok(plain.draw(state, options, elapsed)?),
+        }
+    }
+
+    fn close(&mut self) -> Result<()> {
+        match self {
+            Self::Panel(panel) => panel.close(),
+            Self::Line(line) => Ok(line.close()?),
+            Self::Plain(_) => Ok(()),
+        }
+    }
+}
+
 fn draw_until(
-    mut panel: Panel,
+    mut view: View,
+    raw: bool,
     board: &Board,
     options: &Options,
     finished: &Receiver<Option<Summary>>,
@@ -209,28 +324,27 @@ fn draw_until(
     let mut tick = 0usize;
     loop {
         let mut state = board.snapshot();
-        let rows = route_rows(state.rows.len());
-        if rows != panel.rows {
-            panel.close()?;
-            panel = Panel::open(rows)?;
-        }
         let elapsed = started.elapsed().as_secs_f64();
-        panel.draw(&state, options, elapsed, tick)?;
+        view.draw(&state, options, elapsed, tick)?;
         match finished.try_recv() {
             Ok(Some(summary)) => {
-                state.phase = Phase::Result;
-                let link = panel.print_result(&summary, &state, options, elapsed)?;
-                panel.close()?;
-                return Ok(link);
+                if let View::Panel(panel) = &mut view {
+                    state.phase = Phase::Result;
+                    let link = panel.print_result(&summary, &state, options, elapsed)?;
+                    panel.close()?;
+                    return Ok(link);
+                }
+                view.close()?;
+                return Ok(None);
             }
             Ok(None) | Err(TryRecvError::Disconnected) => {
-                panel.close()?;
+                view.close()?;
                 return Ok(None);
             }
             Err(TryRecvError::Empty) => {}
         }
-        if ctrl_c_pressed()? {
-            panel.close()?;
+        if raw && ctrl_c_pressed()? {
+            view.close()?;
             restore();
             std::process::exit(130);
         }

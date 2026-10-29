@@ -1,10 +1,10 @@
 //! The numbered step line at the top of both panels: `✓ 1. Resolve ─ ⠹ 2. Trace 3/5 ─ ○ 3. Lookup`.
 
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use super::Options;
-use super::theme::{ACCENT, muted, spinner};
+use super::theme::{muted, paint, palette, spinner};
 use crate::board::{Phase, Stage, State};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,10 +82,10 @@ pub fn steps(state: &State, options: &Options, upload_failed: bool) -> Vec<Step>
 
 fn spans(number: usize, step: &Step, short: bool, tick: usize) -> Vec<Span<'static>> {
     let icon = match step.mark {
-        Mark::Done => "✓".green(),
+        Mark::Done => paint("✓", palette().good),
         Mark::Active => spinner(tick),
-        Mark::Current => "●".fg(ACCENT),
-        Mark::Failed => "✗".light_red(),
+        Mark::Current => paint("●", palette().accent),
+        Mark::Failed => paint("✗", palette().bad),
         Mark::Waiting => muted("○"),
     };
     let text = if short {
@@ -95,8 +95,10 @@ fn spans(number: usize, step: &Step, short: bool, tick: usize) -> Vec<Span<'stat
     };
     let label = match step.mark {
         Mark::Done => Span::raw(text),
-        Mark::Active | Mark::Current => Span::styled(text, Style::new().fg(ACCENT).bold()),
-        Mark::Failed => Span::styled(text, Style::new().fg(Color::LightRed).bold()),
+        Mark::Active | Mark::Current => {
+            Span::styled(text, Style::new().fg(palette().accent).bold())
+        }
+        Mark::Failed => Span::styled(text, Style::new().fg(palette().bad).bold()),
         Mark::Waiting => muted(text),
     };
     let mut spans = vec![icon, Span::raw(" "), label];
