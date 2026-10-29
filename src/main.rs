@@ -240,6 +240,11 @@ fn main() -> ExitCode {
         };
     }
     let cli = Cli::parse();
+    if let Some(message) = cli::conflict(&cli) {
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
     let result = match &cli.command {
         Some(Command::Manage(SelfCommand::Update { force, tag })) => {
             manage::update(*force, tag.as_deref()).map(|()| ExitCode::SUCCESS)
