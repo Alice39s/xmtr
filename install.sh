@@ -87,7 +87,14 @@ download() {
     esac
   elif command -v wget >/dev/null 2>&1; then
     case "$1" in
-      https://*) wget -q --https-only -O "$2" "$1" ;;
+      https://*)
+        # BusyBox wget (Alpine) and uclient-fetch (OpenWrt) reject --https-only.
+        if wget --help 2>&1 | grep -q -- '--https-only'; then
+          wget -q --https-only -O "$2" "$1"
+        else
+          wget -q -O "$2" "$1"
+        fi
+        ;;
       *) wget -q -O "$2" "$1" ;;
     esac
   else
