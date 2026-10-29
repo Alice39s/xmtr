@@ -155,8 +155,7 @@ mod socket {
     use crate::net::socket::{Socket, SocketError};
     use itertools::Itertools;
     use nix::{
-        sys::select::FdSet,
-        sys::time::{TimeVal, TimeValLike},
+        poll::{poll, PollFd, PollFlags, PollTimeout},
         Error,
     };
     use socket2::{Domain, Protocol, SockAddr, Type};
@@ -388,41 +387,30 @@ mod socket {
         }
         #[instrument(skip(self), level = "trace")]
         fn is_readable(&mut self, timeout: Duration) -> IoResult<bool> {
-            let mut read = FdSet::new();
-            read.insert(self.inner.as_fd());
-            let readable = nix::sys::select::select(
-                None,
-                Some(&mut read),
-                None,
-                None,
-                Some(&mut TimeVal::milliseconds(timeout.as_millis() as i64)),
+            let mut fds = [PollFd::new(self.inner.as_fd(), PollFlags::POLLIN)];
+            let readable = poll(
+                &mut fds,
+                PollTimeout::try_from(timeout).unwrap_or(PollTimeout::MAX),
             );
             match readable {
                 Ok(readable) => Ok(readable == 1),
                 Err(Error::EINTR) => Ok(false),
                 Err(err) => Err(IoError::Other(
                     std::io::Error::from(err),
-                    IoOperation::Select,
+                    IoOperation::Poll,
                 )),
             }
         }
         #[instrument(skip(self), level = "trace")]
         fn is_writable(&mut self) -> IoResult<bool> {
-            let mut write = FdSet::new();
-            write.insert(self.inner.as_fd());
-            let writable = nix::sys::select::select(
-                None,
-                None,
-                Some(&mut write),
-                None,
-                Some(&mut TimeVal::zero()),
-            );
+            let mut fds = [PollFd::new(self.inner.as_fd(), PollFlags::POLLOUT)];
+            let writable = poll(&mut fds, PollTimeout::ZERO);
             match writable {
                 Ok(writable) => Ok(writable == 1),
                 Err(Error::EINTR) => Ok(false),
                 Err(err) => Err(IoError::Other(
                     std::io::Error::from(err),
-                    IoOperation::Select,
+                    IoOperation::Poll,
                 )),
             }
         }
