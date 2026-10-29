@@ -183,7 +183,11 @@ Tracing needs raw sockets.
 5. Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. Private addresses are never sent to a resolver given with `--dns`.
 6. The routes are uploaded to `--api`, and xmtr prints the trace ID and the IPMap link. `--pin 2580` adds a four-digit PIN (digits 0-8, no 4) that viewers must enter. `--no-upload` keeps everything local. `--hide-origin` asks the gateway not to store the public address the upload came from; the first hops may still show the network.
 
-In a terminal, a panel below the prompt numbers these steps (1. Resolve, 2. Trace, 3. Lookup, 4. Upload, 5. Result) and shows them as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. When the run ends, the panel turns into the result: the IPMap link first, then any notes, then each route as a table, with runs of silent hops folded into one line. The panel is drawn on stderr; when stdout is not a terminal, the panel is erased and the tables and link are printed on stdout as shown above. Ctrl-C stops the run and exits with status 130. `--quiet`, stderr that is not a terminal, or a terminal that does not report its cursor position turns the panel off.
+In a terminal, a panel below the prompt numbers these steps (1. Resolve, 2. Trace, 3. Lookup, 4. Upload, 5. Result) and shows them as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. When the run ends, the panel turns into the result: the IPMap link first, then any notes, then each route as a table, with runs of silent hops folded into one line. The panel is drawn on stderr and needs stdout on the terminal as well. Ctrl-C stops the run and exits with status 130.
+
+`--progress` picks the view, and `auto` chooses one from the terminal. Redirected stdout, a terminal narrower than 44 columns or shorter than 8 rows, or one that does not report its cursor position gets `line`: finished steps and routes scroll by as single lines above one status line, and the tables and link follow as shown above. Stderr that is not a terminal, and `TERM=dumb`, get `plain`: one line per step and finished route, such as `[2/5] 1.1.1.1 v4 ICMP: reached, 7 rounds, 5.2s`, and the current state every 10 seconds while nothing changes. A table that does not fit the terminal, even with long host names wrapped, becomes one line per hop with the host, the average round trip and any loss. `--quiet` turns progress off.
+
+`--theme` sets the colors of the panel and the line view. `auto` asks the terminal for its background and uses RGB colors when `COLORTERM` is `truecolor` or `24bit`; `dark`, `light`, `dark-ansi` and `light-ansi` choose directly.
 
 ## DNS
 
@@ -224,6 +228,8 @@ Usage: xmtr [OPTIONS] <TARGET>...
     --api <URL>                      upload gateway, also XMTR_API
     --json                           print the upload payload on stdout, tables on stderr
 -q, --quiet                          print only the IPMap link
+    --progress <VIEW>                auto, panel, line or plain (default auto)
+    --theme <THEME>                  auto, dark, light, dark-ansi or light-ansi (default auto)
 ```
 
 ## Build from source
