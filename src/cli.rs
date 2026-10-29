@@ -44,7 +44,7 @@ pub struct Cli {
     #[arg(short = 'c', long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..))]
     pub max_rounds: u16,
 
-    /// Time limit per route, at least 1s.
+    /// Time limit per route, at least 1s and longer than `--interval`.
     #[arg(short = 't', long, default_value = "45s", value_parser = duration_at_least_1s)]
     pub time_limit: Duration,
 
@@ -154,6 +154,18 @@ fn interval(value: &str) -> Result<Duration, String> {
     duration_at_least(value, Duration::from_millis(100))
 }
 
+/// Option combinations that each parse on their own but cannot produce a route together.
+pub fn conflict(cli: &Cli) -> Option<String> {
+    // trippy reports a round only when it ends, after at least one interval.
+    (cli.interval >= cli.time_limit).then(|| {
+        format!(
+            "--time-limit {} must be longer than --interval {}; a round takes at least one interval",
+            humantime::format_duration(cli.time_limit),
+            humantime::format_duration(cli.interval)
+        )
+    })
+}
+
 fn pin(value: &str) -> Result<String, String> {
     if value.len() == 4
         && value
@@ -186,5 +198,22 @@ mod tests {
         assert!(interval("0s").is_err());
         assert!(duration_at_least_1s("0s").is_err());
         assert!(interval("0.5").is_err());
+    }
+
+    #[test]
+    fn rejects_a_time_limit_that_fits_no_round() {
+        let parse = |args: &[&str]| Cli::try_parse_from([&["xmtr"], args, &["192.0.2.1"]].concat());
+        for args in [
+            &["-i", "10s", "-t", "2s"][..],
+            &["-i", "2s", "-t", "2s"],
+            &["-t", "1s"],
+        ] {
+            assert!(conflict(&parse(args).unwrap()).is_some(), "{args:?}");
+        }
+        assert_eq!(
+            conflict(&parse(&["-i", "500ms", "-t", "1s"]).unwrap()),
+            None
+        );
+        assert_eq!(conflict(&parse(&[]).unwrap()), None);
     }
 }

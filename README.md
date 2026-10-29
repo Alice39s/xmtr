@@ -210,7 +210,7 @@ Usage: xmtr [OPTIONS] <TARGET>...
 -4, --ipv4 / -6, --ipv6              trace one family only
     --min-rounds <N>                 rounds before a route may stop (default 5)
 -c, --max-rounds <N>                 hard limit on rounds (default 30)
--t, --time-limit <DURATION>          time limit per route, at least 1s (default 45s)
+-t, --time-limit <DURATION>          time limit per route, at least 1s and longer than -i (default 45s)
 -i, --interval <DURATION>            minimum time between rounds, at least 100ms (default 1s)
 -m, --max-ttl <N>                    maximum TTL (default 30)
     --port <PORT>                    TCP destination port (default 443)
