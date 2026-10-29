@@ -1,9 +1,13 @@
 use comfy_table::presets::{ASCII_BORDERS_ONLY_CONDENSED, UTF8_BORDERS_ONLY};
-use comfy_table::{CellAlignment, ContentArrangement, Table};
+use comfy_table::{CellAlignment, ColumnConstraint, ContentArrangement, Table, Width};
 
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Hop, Route};
+
+/// The narrowest the Host column gets in a table: an IPv4 address. Below that the hops are listed one
+/// per line instead.
+const HOST_MIN: u16 = 15;
 
 fn ms(value: Option<f64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| format!("{value:.1}"))
@@ -114,20 +118,23 @@ fn narrow_header(route: &Route, width: usize) -> String {
         .unwrap_or_else(|| cut(&candidates[3], width))
 }
 
-/// A route for a terminal `width` cells wide: the full table when it fits, otherwise one short line
-/// per hop with the host, the average round trip and the loss.
+/// A route for a terminal `width` cells wide, rendered the way `mtr --report-wide` does: the full
+/// table when it fits with only the Host column wrapped, otherwise one short line per hop with the
+/// host, the average round trip and the loss. `usize::MAX` gives the full table for pipes and logs.
 pub fn render_for(route: &Route, width: usize) -> String {
-    let table = render(route);
+    let table = table(route, u16::try_from(width).ok()).to_string();
     if table.lines().all(|line| line.width() <= width) {
-        return table;
+        return format!("{}\n{table}", narrow_header(route, width));
     }
     let mut lines = vec![narrow_header(route, width)];
     lines.extend(route.hops.iter().map(|hop| narrow_hop(hop, width)));
     lines.join("\n")
 }
 
-/// Renders a route the way `mtr --report-wide` does, with alternate ECMP hosts on extra lines.
-pub fn render(route: &Route) -> String {
+/// The hop table with alternate ECMP hosts on extra lines, at most `width` cells wide when one is
+/// given. Only the Host column wraps, and not below `HOST_MIN` cells, so a table that does not fit
+/// comes back wider than `width`.
+fn table(route: &Route, width: Option<u16>) -> Table {
     let mut table = Table::new();
     table
         .load_preset(if cfg!(windows) {
@@ -136,9 +143,16 @@ pub fn render(route: &Route) -> String {
             UTF8_BORDERS_ONLY
         })
         .set_content_arrangement(ContentArrangement::Dynamic)
+        // The width comes from the caller; comfy-table would otherwise wrap to the size of the
+        // terminal it sees on stdout.
+        .force_no_tty()
         .set_header([
             "Hop", "Host", "ASN", "Loss%", "Snt", "Last", "Avg", "Best", "Wrst", "StDev",
         ]);
+    if let Some(width) = width {
+        table.set_width(width);
+    }
+    let mut host_width = 0;
     for hop in &route.hops {
         let host = if hop.hosts.is_empty() {
             "???".to_owned()
@@ -152,6 +166,10 @@ pub fn render(route: &Route) -> String {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        host_width = host
+            .lines()
+            .map(UnicodeWidthStr::width)
+            .fold(host_width, usize::max);
         let asn = hop
             .hosts
             .first()
@@ -170,12 +188,20 @@ pub fn render(route: &Route) -> String {
             ms(hop.stdev_ms),
         ]);
     }
-    for column in [0, 3, 4, 5, 6, 7, 8, 9] {
-        if let Some(column) = table.column_mut(column) {
+    let host_min = u16::try_from(host_width).map_or(HOST_MIN, |host| host.min(HOST_MIN));
+    for (index, column) in table.column_iter_mut().enumerate() {
+        // Constraint widths include the cell padding.
+        let padding = column.padding_width();
+        column.set_constraint(if index == 1 {
+            ColumnConstraint::LowerBoundary(Width::Fixed(host_min + padding))
+        } else {
+            ColumnConstraint::ContentWidth
+        });
+        if index != 1 && index != 2 {
             column.set_cell_alignment(CellAlignment::Right);
         }
     }
-    format!("{}\n{table}", header(route))
+    table
 }
 
 #[cfg(test)]
@@ -237,6 +263,44 @@ mod tests {
                 assert!(line.width() <= width, "{width}: {line}");
             }
         }
-        assert_eq!(render_for(&route(), 200), render(&route()));
+        assert_eq!(render_for(&route(), 200), full(&route()));
+    }
+
+    fn full(route: &Route) -> String {
+        render_for(route, usize::MAX)
+    }
+
+    fn widest(text: &str) -> usize {
+        text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn keeps_every_column_until_the_hosts_would_be_cut() {
+        let natural = widest(&full(&route()));
+        assert_eq!(render_for(&route(), natural), full(&route()));
+        let narrow = render_for(&route(), natural - 1);
+        assert!(!narrow.contains("StDev"), "{narrow}");
+        assert!(widest(&narrow) < natural, "{narrow}");
+    }
+
+    #[test]
+    fn wraps_long_host_names_inside_the_host_column() {
+        let mut route = route();
+        route.hops[0].hosts[0].hostname =
+            Some("ae-12.edge-router-03.backbone.example.net".to_owned());
+        let text = render_for(&route, 90);
+        assert!(widest(&text) <= 90, "{text}");
+        let header = text
+            .lines()
+            .find(|line| line.contains("Hop"))
+            .unwrap_or_default();
+        for column in [
+            "Host", "ASN", "Loss%", "Snt", "Last", "Avg", "Best", "Wrst", "StDev",
+        ] {
+            assert!(header.contains(column), "{column}: {text}");
+        }
+        assert!(text.contains("23.4"), "{text}");
+        assert!(text.contains("(10.63.0.2)"), "{text}");
+        assert!(widest(&full(&route)) > 90);
     }
 }
