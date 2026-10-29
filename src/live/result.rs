@@ -4,7 +4,7 @@
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 
-use super::theme::{ACCENT, MUTED, border_text, muted};
+use super::theme::{border_text, muted, paint, palette};
 use super::{Options, progress, steps};
 use crate::board::State;
 use crate::model::{Hop, Route, UploadAccepted};
@@ -113,10 +113,8 @@ impl Metric {
         match self {
             // A hop that never answered is already muted as `???`; its loss needs no alarm.
             Self::Loss if hop.hosts.is_empty() => muted(text),
-            Self::Loss if hop.loss_pct >= 100.0 => {
-                Span::styled(text, Style::new().fg(Color::LightRed))
-            }
-            Self::Loss if hop.loss_pct > 0.0 => Span::styled(text, Style::new().fg(Color::Yellow)),
+            Self::Loss if hop.loss_pct >= 100.0 => paint(text, palette().bad),
+            Self::Loss if hop.loss_pct > 0.0 => paint(text, palette().warn),
             Self::Loss | Self::Sent => muted(text),
             _ => Span::raw(text),
         }
@@ -258,7 +256,7 @@ impl Table {
                     .and_then(|host| host.asn)
                     .map_or_else(|| "-".to_owned(), |asn| format!("AS{asn}"));
                 let style = if asn == "-" {
-                    Style::new().fg(MUTED)
+                    Style::new().fg(palette().muted)
                 } else {
                     Style::new()
                 };
@@ -320,9 +318,9 @@ fn route_title(route: &Route) -> Line<'static> {
         route.duration_ms as f64 / 1000.0
     )));
     spans.push(if route.reached {
-        "reached".green()
+        paint("reached", palette().good)
     } else {
-        "not reached".light_red()
+        paint("not reached", palette().bad)
     });
     Line::from(spans)
 }
@@ -357,7 +355,7 @@ fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Option<Stri
                 Span::styled(
                     accepted.url.clone(),
                     Style::new()
-                        .fg(ACCENT)
+                        .fg(palette().accent)
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 )
             } else {
@@ -366,29 +364,32 @@ fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Option<Stri
             let mut id = vec![muted("trace-id "), Span::raw(accepted.id.clone())];
             if accepted.pin {
                 id.push(muted(" · "));
-                id.push("readers need your PIN".yellow());
+                id.push(paint("readers need your PIN", palette().warn));
             }
             let lines = vec![
-                callout(ACCENT, vec!["Uploaded to IPMap".bold(), counts]),
-                callout(ACCENT, vec![link]),
-                callout(ACCENT, id),
+                callout(palette().accent, vec!["Uploaded to IPMap".bold(), counts]),
+                callout(palette().accent, vec![link]),
+                callout(palette().accent, id),
             ];
             (lines, (!fits).then(|| accepted.url.clone()))
         }
         Upload::Skipped => (
-            vec![callout(MUTED, vec!["Kept on this machine".bold(), counts])],
+            vec![callout(
+                palette().muted,
+                vec!["Kept on this machine".bold(), counts],
+            )],
             None,
         ),
         Upload::Failed(error) => {
             let mut lines = vec![callout(
-                Color::LightRed,
-                vec!["Upload failed".light_red().bold(), counts],
+                palette().bad,
+                vec![paint("Upload failed", palette().bad).bold(), counts],
             )];
             let width = inner.saturating_sub(INDENT.len() + CALLOUT.chars().count());
             lines.extend(
                 wrapped(error, width)
                     .into_iter()
-                    .map(|part| callout(Color::LightRed, vec![muted(part)])),
+                    .map(|part| callout(palette().bad, vec![muted(part)])),
             );
             (lines, None)
         }
@@ -419,20 +420,20 @@ fn notes(summary: &Summary, inner: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for skipped in &summary.skipped {
         lines.extend(note(
-            "!".yellow(),
+            paint("!", palette().warn),
             &format!("skipped {skipped}"),
             Style::new(),
         ));
     }
     for failure in &summary.failures {
-        lines.extend(note("✗".light_red(), failure, Style::new()));
+        lines.extend(note(paint("✗", palette().bad), failure, Style::new()));
     }
     if summary.unanswered > 0 {
         let text = format!(
             "no reverse DNS or AS answer in time for {} addresses",
             summary.unanswered
         );
-        lines.extend(note(muted("·"), &text, Style::new().fg(MUTED)));
+        lines.extend(note(muted("·"), &text, Style::new().fg(palette().muted)));
     }
     lines
 }
@@ -489,7 +490,9 @@ pub fn render(
                 Span::raw(" "),
                 Span::styled(
                     accepted.url.clone(),
-                    Style::new().fg(ACCENT).add_modifier(Modifier::UNDERLINED),
+                    Style::new()
+                        .fg(palette().accent)
+                        .add_modifier(Modifier::UNDERLINED),
                 ),
                 Span::raw(" "),
             ])

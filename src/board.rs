@@ -27,7 +27,7 @@ pub enum Stage {
 }
 
 /// One row of the view: a target before it resolves, then one traced address.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub target: String,
     pub family: u8,

@@ -3,11 +3,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Stylize};
+use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::theme::{ACCENT, bar, border_text, muted, panel_block, spinner, sweep};
+use super::theme::{bar, border_text, muted, paint, palette, panel_block, spinner, sweep};
 use super::{Options, steps};
 use crate::board::{Phase, Row, Stage, State};
 use crate::convergence::STABLE_ROUNDS;
@@ -25,7 +25,7 @@ const PROTOCOL_WIDTH: usize = 11;
 
 /// How far a route is from being stable: rounds against the rounds a stable route needs, or the time
 /// limit, whichever is closer.
-fn route_ratio(row: &Row, options: &Options) -> f64 {
+pub fn route_ratio(row: &Row, options: &Options) -> f64 {
     let needed = (options.min_rounds + STABLE_ROUNDS) as f64;
     let rounds = row.rounds as f64 / needed;
     let time = row.started.map_or(0.0, |started| {
@@ -38,8 +38,8 @@ fn icon(row: &Row, tick: usize) -> Span<'static> {
     match row.stage {
         Stage::Resolving | Stage::Tracing => spinner(tick),
         Stage::Queued => muted("·"),
-        Stage::Done if row.reached => "✓".green(),
-        Stage::Done => "✗".light_red(),
+        Stage::Done if row.reached => paint("✓", palette().good),
+        Stage::Done => paint("✗", palette().bad),
     }
 }
 
@@ -60,7 +60,10 @@ fn status(row: &Row) -> Vec<Span<'static>> {
         Stage::Resolving => vec![muted("resolving")],
         Stage::Queued => vec![muted("queued")],
         Stage::Tracing if row.reached => {
-            vec!["reached".green(), muted(format!(" · round {}", row.rounds))]
+            vec![
+                paint("reached", palette().good),
+                muted(format!(" · round {}", row.rounds)),
+            ]
         }
         Stage::Tracing => vec![muted(format!("round {}", row.rounds))],
         Stage::Done => {
@@ -68,7 +71,7 @@ fn status(row: &Row) -> Vec<Span<'static>> {
             if row.reached {
                 vec![muted(format!("{} rounds{time}", row.rounds))]
             } else {
-                vec!["not reached".light_red(), muted(time)]
+                vec![paint("not reached", palette().bad), muted(time)]
             }
         }
     }
@@ -82,14 +85,18 @@ fn route_bar(
     index: usize,
 ) -> Vec<Span<'static>> {
     match row.stage {
-        Stage::Resolving | Stage::Queued => bar(width, 0.0, ACCENT, None),
-        Stage::Done if row.reached => bar(width, 1.0, Color::Green, None),
-        Stage::Done => bar(width, 1.0, Color::LightRed, None),
+        Stage::Resolving | Stage::Queued => bar(width, 0.0, palette().accent, None),
+        Stage::Done if row.reached => bar(width, 1.0, palette().good, None),
+        Stage::Done => bar(width, 1.0, palette().bad, None),
         Stage::Tracing => {
             let ratio = route_ratio(row, options);
             let filled = ((width as f64) * ratio).round() as usize;
             let glint = (filled > 0).then(|| (tick + index * 3) % (filled + 4));
-            let color = if row.fallback { Color::Yellow } else { ACCENT };
+            let color = if row.fallback {
+                palette().warn
+            } else {
+                palette().accent
+            };
             bar(width, ratio, color, glint)
         }
     }
@@ -191,7 +198,7 @@ fn footer(state: &State, options: &Options, tick: usize) -> Line<'static> {
             } else {
                 answered as f64 / total as f64
             };
-            spans.extend(bar(BAR_MAX, ratio, ACCENT, None));
+            spans.extend(bar(BAR_MAX, ratio, palette().accent, None));
             spans.push(muted(format!("  {answered}/{total} addresses")));
         }
         Phase::Upload => {

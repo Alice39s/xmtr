@@ -130,6 +130,15 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
     })
 }
 
+/// Columns the route tables may use: the terminal width, or no limit when the output is not a
+/// terminal, so logs and pipes keep the full table.
+fn table_width(terminal: bool) -> usize {
+    if !terminal {
+        return usize::MAX;
+    }
+    ratatui::crossterm::terminal::size().map_or(usize::MAX, |(width, _)| usize::from(width))
+}
+
 fn report(cli: &Cli, report: Report) -> Result<ExitCode> {
     if !cli.quiet {
         for skipped in &report.skipped {
@@ -151,11 +160,17 @@ fn report(cli: &Cli, report: Report) -> Result<ExitCode> {
     let mut stdout = Stdout::new();
     // With --json the tables go to stderr so stdout holds only the JSON document.
     if !cli.quiet {
+        let width = if cli.json {
+            table_width(std::io::stderr().is_terminal())
+        } else {
+            table_width(std::io::stdout().is_terminal())
+        };
         for route in &report.body.routes {
+            let table = output::render_for(route, width);
             if cli.json {
-                eprintln!("{}\n", output::render(route));
+                eprintln!("{table}\n");
             } else {
-                stdout.line(format_args!("{}\n", output::render(route)));
+                stdout.line(format_args!("{table}\n"));
             }
         }
     }
@@ -218,7 +233,7 @@ fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
     }))?;
     if let Some(link) = link_below {
         // Plain text the terminal can wrap, beside the panel on stderr.
-        eprintln!("{}", link.as_str().cyan().underlined());
+        eprintln!("{}", link.as_str().with(live::accent()).underlined());
     }
     if cli.json {
         Stdout::new().line(serde_json::to_string_pretty(&report.body)?);
@@ -228,16 +243,21 @@ fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
 
 fn run(cli: &Cli) -> Result<ExitCode> {
     let board = Arc::new(Board::new(&cli.targets));
-    let live = if !cli.quiet && std::io::stderr().is_terminal() {
-        match Live::start(Arc::clone(&board), live_options(cli)?) {
+    let live = if cli.quiet {
+        None
+    } else {
+        match Live::start(
+            Arc::clone(&board),
+            live_options(cli)?,
+            cli.progress,
+            cli.theme,
+        ) {
             Ok(live) => Some(live),
             Err(error) => {
-                eprintln!("note: showing results without the live panel: {error:#}");
+                eprintln!("note: showing results without the live view: {error:#}");
                 None
             }
         }
-    } else {
-        None
     };
     let result = work(cli, &board);
     let Some(live) = live else {
@@ -245,7 +265,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     };
     // The result panel goes to stderr, so it replaces the tables only where they would have been
     // shown in the same terminal; `--json` already puts them on stderr.
-    let in_panel = cli.json || std::io::stdout().is_terminal();
+    let in_panel = live.shows_result() && (cli.json || std::io::stdout().is_terminal());
     match result {
         Ok(report) if in_panel && !report.body.routes.is_empty() => show_result(cli, live, report),
         result => {

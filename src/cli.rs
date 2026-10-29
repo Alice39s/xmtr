@@ -102,6 +102,16 @@ pub struct Cli {
     /// Print only the IPMap link.
     #[arg(short = 'q', long)]
     pub quiet: bool,
+
+    /// Progress view on stderr: `panel`, a status `line` for small terminals, or `plain` text lines
+    /// for logs; `auto` picks one from the terminal.
+    #[arg(long, value_enum, default_value_t = ProgressChoice::Auto, value_name = "VIEW")]
+    pub progress: ProgressChoice,
+
+    /// Colors for the progress and result views; `auto` asks the terminal for its background and
+    /// uses RGB colors when `COLORTERM` announces true color.
+    #[arg(long, value_enum, default_value_t = ThemeChoice::Auto)]
+    pub theme: ThemeChoice,
 }
 
 #[derive(Debug, Subcommand)]
@@ -124,6 +134,23 @@ pub enum SelfCommand {
     },
     /// Delete this binary.
     Uninstall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ProgressChoice {
+    Auto,
+    Panel,
+    Line,
+    Plain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ThemeChoice {
+    Auto,
+    Dark,
+    Light,
+    DarkAnsi,
+    LightAnsi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
