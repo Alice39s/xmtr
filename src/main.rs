@@ -10,7 +10,8 @@ mod plan;
 mod runner;
 mod upload;
 
-use std::io::IsTerminal;
+use std::fmt::Display;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -29,6 +30,33 @@ const DEFAULT_PARALLEL: usize = 8;
 /// True when no hop of the route answered a single probe.
 fn silent(route: &model::Route) -> bool {
     route.hops.iter().all(|hop| hop.recv == 0)
+}
+
+/// Lines for stdout. A reader that went away, such as `xmtr ... | head -1`, closes stdout; later lines
+/// are then dropped instead of aborting the run.
+struct Stdout {
+    open: bool,
+}
+
+impl Stdout {
+    const fn new() -> Self {
+        Self { open: true }
+    }
+
+    fn line(&mut self, text: impl Display) {
+        if self.open && writeln!(std::io::stdout().lock(), "{text}").is_err() {
+            self.open = false;
+        }
+    }
+
+    /// Prints the IPMap link on stdout, or on stderr when stdout is closed so the stored trace can still
+    /// be found.
+    fn link(&mut self, url: &str) {
+        self.line(url);
+        if !self.open {
+            eprintln!("{url}");
+        }
+    }
 }
 
 /// Everything a run produced, printed once the live view is gone.
@@ -120,29 +148,29 @@ fn report(cli: &Cli, report: Report) -> Result<ExitCode> {
             report.unanswered
         );
     }
+    let mut stdout = Stdout::new();
     // With --json the tables go to stderr so stdout holds only the JSON document.
     if !cli.quiet {
         for route in &report.body.routes {
             if cli.json {
                 eprintln!("{}\n", output::render(route));
             } else {
-                println!("{}\n", output::render(route));
+                stdout.line(format_args!("{}\n", output::render(route)));
             }
         }
     }
     if cli.json {
-        println!("{}", serde_json::to_string_pretty(&report.body)?);
+        stdout.line(serde_json::to_string_pretty(&report.body)?);
     }
     match report.upload {
         None => Ok(ExitCode::SUCCESS),
         Some(Ok(accepted)) => {
-            if cli.quiet {
-                println!("{}", accepted.url);
-            } else {
-                println!("trace-id {}\n{}", accepted.id, accepted.url);
-                if accepted.pin {
-                    println!("Readers also need the PIN you set.");
-                }
+            if !cli.quiet {
+                stdout.line(format_args!("trace-id {}", accepted.id));
+            }
+            stdout.link(&accepted.url);
+            if !cli.quiet && accepted.pin {
+                stdout.line("Readers also need the PIN you set.");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -193,7 +221,7 @@ fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
         eprintln!("{}", link.as_str().cyan().underlined());
     }
     if cli.json {
-        println!("{}", serde_json::to_string_pretty(&report.body)?);
+        Stdout::new().line(serde_json::to_string_pretty(&report.body)?);
     }
     Ok(code)
 }
