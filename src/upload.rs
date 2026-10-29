@@ -51,6 +51,14 @@ fn agent(url: &str, dns: &Dns) -> Result<Agent> {
         return Ok(config.into());
     }
     let uri: Uri = url.parse().with_context(|| format!("parsing {url}"))?;
+    Ok(Agent::with_parts(
+        config,
+        DefaultConnector::new(),
+        PinnedResolver(gateway_addrs(&uri, dns)?),
+    ))
+}
+
+fn gateway_addrs(uri: &Uri, dns: &Dns) -> Result<Vec<SocketAddr>> {
     let host = uri.host().context("gateway URL has no host")?;
     let host = host
         .strip_prefix('[')
@@ -63,16 +71,11 @@ fn agent(url: &str, dns: &Dns) -> Result<Agent> {
         } else {
             443
         });
-    let addrs = dns
+    Ok(dns
         .resolve(host)?
         .into_iter()
         .map(|ip| SocketAddr::new(ip, port))
-        .collect();
-    Ok(Agent::with_parts(
-        config,
-        DefaultConnector::new(),
-        PinnedResolver(addrs),
-    ))
+        .collect())
 }
 
 /// Sends the routes to the gateway and returns the stored trace ID, view key and IPMap link.
@@ -106,9 +109,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn custom_resolver_accepts_an_ipv6_gateway_literal() {
+    fn custom_resolver_preserves_gateway_literals_and_ports() {
         let dns = Dns::new(&"127.0.0.1:9".parse().unwrap()).unwrap();
-        agent("http://[::1]:8080/api/v1/traces", &dns).unwrap();
-        agent("http://127.0.0.1:8080/api/v1/traces", &dns).unwrap();
+        for (url, expected) in [
+            ("http://[::1]:8080/api/v1/traces", "[::1]:8080"),
+            ("http://127.0.0.1:8080/api/v1/traces", "127.0.0.1:8080"),
+            ("http://[::1]/api/v1/traces", "[::1]:80"),
+            ("http://127.0.0.1/api/v1/traces", "127.0.0.1:80"),
+            ("https://[::1]/api/v1/traces", "[::1]:443"),
+            ("https://127.0.0.1/api/v1/traces", "127.0.0.1:443"),
+        ] {
+            let uri = url.parse().unwrap();
+            assert_eq!(
+                gateway_addrs(&uri, &dns).unwrap(),
+                [expected.parse().unwrap()]
+            );
+            agent(url, &dns).unwrap();
+        }
     }
 }
