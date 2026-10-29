@@ -78,7 +78,7 @@ pub enum ErrorKind {
 pub enum IoOperation {
     NewSocket,
     SetNonBlocking,
-    Select,
+    Poll,
     RecvFrom,
     Read,
     Shutdown,
@@ -109,7 +109,7 @@ impl Display for IoOperation {
         match self {
             Self::NewSocket => write!(f, "create new socket"),
             Self::SetNonBlocking => write!(f, "set non-blocking"),
-            Self::Select => write!(f, "select"),
+            Self::Poll => write!(f, "poll"),
             Self::RecvFrom => write!(f, "recv from"),
             Self::Read => write!(f, "read"),
             Self::Shutdown => write!(f, "shutdown"),
