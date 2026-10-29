@@ -26,14 +26,15 @@ impl PlainView {
     }
 
     pub fn draw(&mut self, state: &State, options: &Options, elapsed: f64) -> io::Result<()> {
-        let lines: Vec<String> = events::between(self.before.as_ref(), state)
+        let lines: Vec<String> = events::between(self.before.as_ref(), state, options)
             .iter()
             .map(|event| line(event, state, options))
             .collect();
         self.before = Some(state.clone());
         let mut out = io::stderr().lock();
         if lines.is_empty() {
-            if self.last_line.elapsed() < HEARTBEAT {
+            // The last draw, with the run over, only adds what changed.
+            if self.last_line.elapsed() < HEARTBEAT || state.phase == Phase::Result {
                 return Ok(());
             }
             let (number, steps) = events::number(state.phase, options);
