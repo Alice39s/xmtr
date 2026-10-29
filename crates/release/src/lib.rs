@@ -143,24 +143,26 @@ pub fn fetch_verified(agent: &Agent, tag: &str, file: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// The xmtr executable inside a release archive.
+/// Reads an archive entry that declares `size` bytes, rejecting it when the header or the
+/// decompressed data exceeds `MAX_ASSET_BYTES`.
 fn read_binary(entry: impl Read, size: u64) -> Result<Vec<u8>> {
-    if size > MAX_ASSET_BYTES {
-        bail!(
+    let too_large = || {
+        anyhow!(
             "{} exceeds the {MAX_ASSET_BYTES}-byte binary limit",
             exe_name()
-        );
+        )
+    };
+    if size > MAX_ASSET_BYTES {
+        return Err(too_large());
     }
-    let mut binary = Vec::new();
+    // `size` is at most MAX_ASSET_BYTES here, so it fits in usize on every target.
+    let mut binary = Vec::with_capacity(size as usize);
     entry
         .take(MAX_ASSET_BYTES + 1)
         .read_to_end(&mut binary)
         .context("reading the xmtr binary")?;
     if binary.len() as u64 > MAX_ASSET_BYTES {
-        bail!(
-            "{} exceeds the {MAX_ASSET_BYTES}-byte binary limit",
-            exe_name()
-        );
+        return Err(too_large());
     }
     Ok(binary)
 }
@@ -398,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_binary_larger_than_the_download_limit() {
+    fn rejects_a_binary_over_the_limit() {
         let archive = binary_archive(MAX_ASSET_BYTES + 1);
         assert!(archive.len() < 1024 * 1024);
         let Err(error) = extract_binary(&archive) else {
