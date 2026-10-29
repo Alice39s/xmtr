@@ -12,7 +12,7 @@
 
 `xmtr` runs concurrent traceroutes with [trippy](https://github.com/fujiapple852/trippy), stops each route as soon as its path is stable, and uploads the result to [xmsl.dev IPMap](https://xmsl.dev/ipmap). IPMap places every hop on a map and replays the route.
 
-<a href="https://xmsl.dev/ipmap?plat=xmtr&trace-id=103115083070058496-nBjPEnny"><img src=".github/assets/ipmap-demo.png" alt="IPMap showing a route from Rennes through London, the United States and Tokyo to Guam"></a>
+<a href="https://xmsl.dev/xmtr/103115083070058496-nBjPEnny"><img src=".github/assets/ipmap-demo.png" alt="IPMap showing a route from Rennes through London, the United States and Tokyo to Guam"></a>
 
 In a terminal, xmtr shows its progress and the result in a panel (see [How a run works](#how-a-run-works)). Piped or redirected, it prints each route as plain text, followed by the link to its map:
 
@@ -50,7 +50,7 @@ $ sudo xmtr --min-rounds 20 121.55.201.201 | cat
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 trace-id 103115083070058496-nBjPEnny
-https://xmsl.dev/ipmap?plat=xmtr&trace-id=103115083070058496-nBjPEnny
+https://xmsl.dev/xmtr/103115083070058496-nBjPEnny
 ```
 
 The trace ID is the snowflake ID and an 8-letter key. Anyone with the link can open the trace; the key keeps others from guessing it.
