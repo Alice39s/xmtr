@@ -324,14 +324,23 @@ fn serve(listener: TcpListener, protocol: &str, stage: &str, api: &str) {
             return;
         }
         if stage == "drip-reply" {
-            // Each byte arrives within 250ms, but the whole reply exceeds the
-            // shared budget. A fresh timeout on each read would fail this test.
-            let start = Instant::now();
-            for byte in [5, 0, 0, 1, 127, 0, 0, 1, 0, 0] {
-                if start.elapsed() >= Duration::from_millis(300) {
-                    break;
+            // Each byte arrives within 250ms, but the complete reply takes
+            // over 1s. Restarting the budget per read must fail the child's
+            // unchanged elapsed-time assertion, even after TCP buffering.
+            let reply = [&[5, 0, 0, 3, 24][..], &[b'h'; 24], &[0, 0]].concat();
+            for byte in reply {
+                match stream.write_all(&[byte]) {
+                    Ok(()) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("sending fragmented SOCKS reply: {error}"),
                 }
-                stream.write_all(&[byte]).unwrap();
                 thread::sleep(Duration::from_millis(60));
             }
             closed(&mut stream);
@@ -341,6 +350,24 @@ fn serve(listener: TcpListener, protocol: &str, stage: &str, api: &str) {
             thread::sleep(Duration::from_millis(150));
         }
         stream.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
+    }
+    if stage == "delayed-headers" {
+        // The global budget may expire during the delayed handshake, before
+        // POST is sent (notably on a busy macOS runner). Keep the proxy open
+        // through either outcome; never require a request after its deadline.
+        // Successful-upload cases separately validate headers and JSON.
+        let mut received = 0;
+        loop {
+            match stream.read(&mut [0; 4096]) {
+                Ok(0) => return,
+                Ok(len) => {
+                    received += len;
+                    assert!(received < 16_384);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => return,
+                Err(error) => panic!("waiting for upload deadline: {error}"),
+            }
+        }
     }
     let mut stream = BufReader::new(stream);
     if protocol == "http" {
@@ -384,7 +411,7 @@ fn serve(listener: TcpListener, protocol: &str, stage: &str, api: &str) {
     stream.read_exact(&mut body).unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["routes"], serde_json::json!([]));
-    if stage == "headers" || stage == "delayed-headers" {
+    if stage == "headers" {
         closed(&mut stream);
         return;
     }
@@ -603,7 +630,6 @@ fn stalled_socks_stages_share_global_deadline() {
         "auth",
         "connect",
         "partial-reply",
-        "drip-reply",
         "headers",
         "body",
         "delayed-headers",
@@ -673,4 +699,9 @@ fn no_proxy_uploads_directly_with_system_and_custom_dns() {
         );
         server_result.unwrap();
     }
+}
+
+#[test]
+fn slow_socks_reply_cannot_restart_the_deadline() {
+    check("socks5h", "ALL_PROXY", "drip-reply", REMOTE, "auto", &[]);
 }
