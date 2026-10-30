@@ -185,11 +185,15 @@ fn accept(listener: TcpListener, production: bool) -> TcpStream {
 }
 
 fn closed(stream: &mut impl Read) {
-    assert_eq!(
-        stream.read(&mut [0]).unwrap(),
-        0,
-        "client must close the timed-out socket"
-    );
+    // A timed-out client can close with FIN or RST, depending on the OS and
+    // unread reply bytes. Both prove socket disposal. A read timeout or any
+    // application byte is still a failure; the child separately asserts the
+    // exact global-timeout error and elapsed request budget.
+    match stream.read(&mut [0]) {
+        Ok(0) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        result => panic!("client did not close the timed-out socket: {result:?}"),
+    }
 }
 
 fn target(stream: &mut TcpStream, api: &str, version: u8) {
@@ -422,6 +426,7 @@ fn check(
         command.env(name, value);
     }
     command.env(variable, format!("{protocol}://{credentials}{address}"));
+    let case = format!("{protocol} {stage}");
     let (protocol, stage, api) = (protocol.to_owned(), stage.to_owned(), api.to_owned());
     let production = stage == "production-greeting";
     let server = thread::spawn(move || serve(listener, &protocol, &stage, &api));
@@ -434,11 +439,11 @@ fn check(
     let server_result = server.join();
     assert!(
         output.status.success(),
-        "upload subprocess failed:\n{}\n{}",
+        "upload subprocess failed ({case}):\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    server_result.unwrap();
+    server_result.unwrap_or_else(|_| panic!("proxy fixture failed: {case}"));
     if expectation.ends_with("timeout") {
         print!("{}", String::from_utf8_lossy(&output.stdout));
     }
