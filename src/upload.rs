@@ -24,17 +24,26 @@ mod proxy_tests;
 
 /// Hands ureq addresses that were resolved with the resolver chosen by `--dns`.
 #[derive(Debug)]
-struct PinnedResolver(Vec<SocketAddr>);
+struct PinnedResolver {
+    gateway: Uri,
+    addrs: Vec<SocketAddr>,
+}
 
 impl Resolver for PinnedResolver {
     fn resolve(
         &self,
-        _uri: &Uri,
-        _config: &Config,
-        _timeout: NextTimeout,
+        uri: &Uri,
+        config: &Config,
+        timeout: NextTimeout,
     ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        // CONNECT and SOCKS ask this same resolver for the proxy endpoint.
+        // Only the gateway gets the --dns addresses; never reuse its port or
+        // address for a different authority.
+        if uri.authority() != self.gateway.authority() {
+            return DefaultResolver::default().resolve(uri, config, timeout);
+        }
         let mut addrs = self.empty();
-        for addr in self.0.iter().take(16) {
+        for addr in self.addrs.iter().take(16) {
             addrs.push(*addr);
         }
         if addrs.is_empty() {
@@ -61,18 +70,26 @@ fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
             .chain(ConnectProxyConnector::default())
             .chain(TcpConnector::default())
             .chain(RustlsConnector::default());
-    if dns.uses_system() {
+    let uri: Uri = url.parse().with_context(|| format!("parsing {url}"))?;
+    let remote_proxy = config
+        .proxy()
+        .is_some_and(|proxy| !proxy.is_no_proxy(&uri) && !proxy.resolve_target());
+    // Remote-resolving proxies must receive the hostname without a local
+    // gateway lookup, including when --dns selects a custom resolver.
+    if dns.uses_system() || remote_proxy {
         return Ok(Agent::with_parts(
             config,
             connector,
             DefaultResolver::default(),
         ));
     }
-    let uri: Uri = url.parse().with_context(|| format!("parsing {url}"))?;
     Ok(Agent::with_parts(
         config,
         connector,
-        PinnedResolver(gateway_addrs(&uri, dns)?),
+        PinnedResolver {
+            addrs: gateway_addrs(&uri, dns)?,
+            gateway: uri,
+        },
     ))
 }
 

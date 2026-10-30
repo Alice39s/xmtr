@@ -622,6 +622,33 @@ fn silent_http_connect_obeys_global_timeout() {
 }
 
 #[test]
+fn custom_dns_does_not_replace_proxy_addresses() {
+    for protocol in ["http", "socks5"] {
+        check(protocol, "ALL_PROXY", "ok", LOCAL, "127.0.0.1:9", &[]);
+    }
+}
+
+#[test]
+fn remote_proxy_dns_does_not_query_custom_resolver() {
+    // An open UDP socket gives us evidence that no DNS request was leaked,
+    // rather than merely relying on the .invalid hostname failing to resolve.
+    let dns = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    for protocol in ["http", "socks4a", "socks5h"] {
+        check(
+            protocol,
+            "ALL_PROXY",
+            "ok",
+            REMOTE,
+            &dns.local_addr().unwrap().to_string(),
+            &[],
+        );
+    }
+    dns.set_nonblocking(true).unwrap();
+    let error = dns.recv_from(&mut [0; 512]).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+}
+
+#[test]
 fn no_proxy_uploads_directly_with_system_and_custom_dns() {
     for dns in ["auto", "127.0.0.1:9"] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
