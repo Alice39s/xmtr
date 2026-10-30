@@ -184,14 +184,21 @@ fn accept(listener: TcpListener, production: bool) -> TcpStream {
     stream
 }
 
+fn peer_closed(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+    )
+}
+
 fn closed(stream: &mut impl Read) {
-    // A timed-out client can close with FIN or RST, depending on the OS and
+    // A timed-out client can close with FIN, RST or an abort, depending on the OS and
     // unread reply bytes. Both prove socket disposal. A read timeout or any
     // application byte is still a failure; the child separately asserts the
     // exact global-timeout error and elapsed request budget.
     match stream.read(&mut [0]) {
         Ok(0) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(error) if peer_closed(&error) => {}
         result => panic!("client did not close the timed-out socket: {result:?}"),
     }
 }
@@ -334,10 +341,14 @@ fn serve(listener: TcpListener, protocol: &str, stage: &str, api: &str) {
                     Err(error)
                         if matches!(
                             error.kind(),
-                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                            std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
                         ) =>
                     {
-                        break;
+                        // This write already observed terminal socket closure.
+                        // Windows may report WSAECONNABORTED (10053) here.
+                        return;
                     }
                     Err(error) => panic!("sending fragmented SOCKS reply: {error}"),
                 }
@@ -364,7 +375,7 @@ fn serve(listener: TcpListener, protocol: &str, stage: &str, api: &str) {
                     received += len;
                     assert!(received < 16_384);
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => return,
+                Err(error) if peer_closed(&error) => return,
                 Err(error) => panic!("waiting for upload deadline: {error}"),
             }
         }
