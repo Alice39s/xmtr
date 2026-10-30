@@ -14,7 +14,7 @@ homepage = "https://xmsl.dev/ipmap"
 [workspace.dependencies]
 anyhow = "1"
 # Upload uses ureq's unversioned transport API; review the workaround before upgrading.
-ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "gzip", "socks-proxy"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "gzip"] }
 # The version must match workspace.package.version; the release workflow checks it.
 xmtr-release = { path = "crates/release", version = "0.3.1" }
 
