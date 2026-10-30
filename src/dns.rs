@@ -333,6 +333,15 @@ impl Dns {
         Ok(addrs)
     }
 
+    /// Build the system-target path without depending on /etc/resolv.conf in
+    /// hermetic upload tests. No hickory lookup is used by those tests.
+    #[cfg(test)]
+    pub(crate) fn system_for_tests() -> Self {
+        let mut dns = Self::new(&"127.0.0.1:9".parse().unwrap()).unwrap();
+        dns.system_targets = true;
+        dns
+    }
+
     pub const fn uses_system(&self) -> bool {
         self.system_targets
     }

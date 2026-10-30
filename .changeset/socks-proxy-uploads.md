@@ -2,8 +2,10 @@
 default: patch
 ---
 
-# Upload through SOCKS proxies from the environment
+# Upload through SOCKS proxies without hanging
 
-Uploads now honor SOCKS proxies configured through `ALL_PROXY` and `all_proxy`
-instead of failing with `Connection refused` before connecting. Proxy precedence
-and the HTTP proxy fallback when those variables are empty or unset stay the same.
+Uploads honor SOCKS proxies configured through `ALL_PROXY` and `all_proxy`.
+SOCKS negotiation, authentication, TLS and the upload response share the request
+timeout, so a proxy that accepts a connection without answering cannot leave the
+upload stuck. Proxy precedence and the HTTP fallback remain unchanged.
+([#31](https://github.com/Alice39s/xmtr/pull/31))
