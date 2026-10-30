@@ -13,6 +13,10 @@ use crate::model::{Problem, Upload, UploadAccepted};
 
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(test)]
+#[path = "upload/proxy_tests.rs"]
+mod proxy_tests;
+
 /// Hands ureq addresses that were resolved with the resolver chosen by `--dns`.
 #[derive(Debug)]
 struct PinnedResolver(Vec<SocketAddr>);
