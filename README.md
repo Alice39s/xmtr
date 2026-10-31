@@ -94,6 +94,8 @@ xmtr self update        # install the latest release over this binary
 xmtr self uninstall     # delete this binary
 ```
 
+After a run in a terminal, xmtr looks up the latest release, waiting at most 3 seconds. When it is newer, xmtr asks whether to install it and then whether to run the same command again with the new version; Enter answers yes to both. When a package manager owns the binary, or its directory is not writable, xmtr prints the command that updates it instead. Runs with `--json`, `--quiet` or `--no-upload`, and runs without a terminal on stdin and stderr, skip the lookup.
+
 **Package managers**
 
 | | Manager | Command |

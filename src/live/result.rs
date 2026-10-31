@@ -1,10 +1,11 @@
 //! The result panel printed when a run ends: the finished step line, the IPMap link set apart at
 //! the top, notes, then every route as a table.
 
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 
-use super::theme::{border_text, muted, paint, palette};
+use super::console::Note;
+use super::theme::{CALLOUT, INDENT, border_text, callout, muted, paint, palette, wrapped};
 use super::{Options, progress, steps};
 use crate::board::State;
 use crate::model::{Hop, Route, UploadAccepted};
@@ -21,10 +22,7 @@ pub enum Upload {
 pub struct Summary {
     pub routes: Vec<Route>,
     pub upload: Upload,
-    pub skipped: Vec<String>,
-    pub failures: Vec<String>,
-    /// Addresses without a reverse DNS or AS answer in time.
-    pub unanswered: usize,
+    pub notes: Vec<Note>,
 }
 
 /// A laid out result panel.
@@ -44,8 +42,6 @@ impl Rendered {
     }
 }
 
-const INDENT: &str = " ";
-const CALLOUT: &str = "▍ ";
 const GAP: usize = 2;
 const HOP_WIDTH: usize = 3;
 const ASN_WIDTH: usize = 8;
@@ -325,22 +321,6 @@ fn route_title(route: &Route) -> Line<'static> {
     Line::from(spans)
 }
 
-fn callout(color: Color, spans: Vec<Span<'static>>) -> Line<'static> {
-    let mut all = vec![
-        Span::raw(INDENT),
-        Span::styled(CALLOUT, Style::new().fg(color)),
-    ];
-    all.extend(spans);
-    Line::from(all)
-}
-
-fn wrapped(text: &str, width: usize) -> Vec<String> {
-    textwrap::wrap(text, width.max(16))
-        .into_iter()
-        .map(String::from)
-        .collect()
-}
-
 /// The callout at the top: the link when the upload worked, otherwise what happened to the upload.
 fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Option<String>) {
     let reached = summary.routes.iter().filter(|route| route.reached).count();
@@ -396,48 +376,6 @@ fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Option<Stri
     }
 }
 
-fn notes(summary: &Summary, inner: usize) -> Vec<Line<'static>> {
-    let width = inner.saturating_sub(INDENT.len() + 2);
-    let note = |icon: Span<'static>, text: &str, style: Style| {
-        wrapped(text, width)
-            .into_iter()
-            .enumerate()
-            .map(|(index, part)| {
-                let lead = if index == 0 {
-                    icon.clone()
-                } else {
-                    Span::raw(" ")
-                };
-                Line::from(vec![
-                    Span::raw(INDENT),
-                    lead,
-                    Span::raw(" "),
-                    Span::styled(part, style),
-                ])
-            })
-            .collect::<Vec<_>>()
-    };
-    let mut lines = Vec::new();
-    for skipped in &summary.skipped {
-        lines.extend(note(
-            paint("!", palette().warn),
-            &format!("skipped {skipped}"),
-            Style::new(),
-        ));
-    }
-    for failure in &summary.failures {
-        lines.extend(note(paint("✗", palette().bad), failure, Style::new()));
-    }
-    if summary.unanswered > 0 {
-        let text = format!(
-            "no reverse DNS or AS answer in time for {} addresses",
-            summary.unanswered
-        );
-        lines.extend(note(muted("·"), &text, Style::new().fg(palette().muted)));
-    }
-    lines
-}
-
 /// Lays out the result panel for a terminal `columns` cells wide.
 pub fn render(
     summary: &Summary,
@@ -472,10 +410,9 @@ pub fn render(
     let mut lines = vec![steps::render(&steps, inner, 0), Line::raw("")];
     let (headline, link_below) = headline(summary, inner);
     lines.extend(headline);
-    let notes = notes(summary, inner);
-    if !notes.is_empty() {
+    if !summary.notes.is_empty() {
         lines.push(Line::raw(""));
-        lines.extend(notes);
+        lines.extend(summary.notes.iter().flat_map(|note| note.lines(inner)));
     }
     for route in &summary.routes {
         lines.push(Line::raw(""));
@@ -573,9 +510,10 @@ mod tests {
                 ],
             }],
             upload,
-            skipped: vec!["example.org: no address in the requested family".to_owned()],
-            failures: Vec::new(),
-            unanswered: 2,
+            notes: vec![
+                Note::Skipped("example.org: no address in the requested family".to_owned()),
+                Note::Unanswered(2),
+            ],
         }
     }
 
