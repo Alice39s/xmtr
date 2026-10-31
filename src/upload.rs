@@ -5,27 +5,45 @@ use anyhow::{Context, Result, bail};
 use ureq::Agent;
 use ureq::config::Config;
 use ureq::http::Uri;
-use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
-use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{
+    ConnectProxyConnector, Connector, NextTimeout, RustlsConnector, TcpConnector,
+};
 
 use crate::dns::Dns;
 use crate::model::{Problem, Upload, UploadAccepted};
 
+#[path = "upload/socks.rs"]
+mod socks;
+
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+#[path = "upload/proxy_tests.rs"]
+mod proxy_tests;
 
 /// Hands ureq addresses that were resolved with the resolver chosen by `--dns`.
 #[derive(Debug)]
-struct PinnedResolver(Vec<SocketAddr>);
+struct PinnedResolver {
+    gateway: Uri,
+    addrs: Vec<SocketAddr>,
+}
 
 impl Resolver for PinnedResolver {
     fn resolve(
         &self,
-        _uri: &Uri,
-        _config: &Config,
-        _timeout: NextTimeout,
+        uri: &Uri,
+        config: &Config,
+        timeout: NextTimeout,
     ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        // CONNECT and SOCKS ask this same resolver for the proxy endpoint.
+        // Only the gateway gets the --dns addresses; never reuse its port or
+        // address for a different authority.
+        if uri.authority() != self.gateway.authority() {
+            return DefaultResolver::default().resolve(uri, config, timeout);
+        }
         let mut addrs = self.empty();
-        for addr in self.0.iter().take(16) {
+        for addr in self.addrs.iter().take(16) {
             addrs.push(*addr);
         }
         if addrs.is_empty() {
@@ -35,9 +53,9 @@ impl Resolver for PinnedResolver {
     }
 }
 
-fn agent(url: &str, dns: &Dns) -> Result<Agent> {
+fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
     let config = Agent::config_builder()
-        .timeout_global(Some(UPLOAD_TIMEOUT))
+        .timeout_global(Some(timeout))
         .http_status_as_error(false)
         // Addresses are pinned to the gateway host, so a redirect elsewhere would reach the wrong server.
         .max_redirects(0)
@@ -47,14 +65,31 @@ fn agent(url: &str, dns: &Dns) -> Result<Agent> {
             env!("CARGO_PKG_VERSION")
         ))
         .build();
-    if dns.uses_system() {
-        return Ok(config.into());
-    }
+    let connector =
+        ().chain(socks::SocksConnector)
+            .chain(ConnectProxyConnector::default())
+            .chain(TcpConnector::default())
+            .chain(RustlsConnector::default());
     let uri: Uri = url.parse().with_context(|| format!("parsing {url}"))?;
+    let remote_proxy = config
+        .proxy()
+        .is_some_and(|proxy| !proxy.is_no_proxy(&uri) && !proxy.resolve_target());
+    // Remote-resolving proxies must receive the hostname without a local
+    // gateway lookup, including when --dns selects a custom resolver.
+    if dns.uses_system() || remote_proxy {
+        return Ok(Agent::with_parts(
+            config,
+            connector,
+            DefaultResolver::default(),
+        ));
+    }
     Ok(Agent::with_parts(
         config,
-        DefaultConnector::new(),
-        PinnedResolver(gateway_addrs(&uri, dns)?),
+        connector,
+        PinnedResolver {
+            addrs: gateway_addrs(&uri, dns)?,
+            gateway: uri,
+        },
     ))
 }
 
@@ -93,8 +128,17 @@ fn printable(text: &str) -> String {
 
 /// Sends the routes to the gateway and returns the stored trace ID, view key and IPMap link.
 pub fn upload(api: &str, body: &Upload, dns: &Dns) -> Result<UploadAccepted> {
+    upload_with_timeout(api, body, dns, UPLOAD_TIMEOUT)
+}
+
+fn upload_with_timeout(
+    api: &str,
+    body: &Upload,
+    dns: &Dns,
+    timeout: Duration,
+) -> Result<UploadAccepted> {
     let url = format!("{}/api/v1/traces", api.trim_end_matches('/'));
-    let mut response = agent(&url, dns)?
+    let mut response = agent(&url, dns, timeout)?
         .post(&url)
         .send_json(body)
         .with_context(|| format!("uploading to {url}"))?;
@@ -143,7 +187,7 @@ mod tests {
                 gateway_addrs(&uri, &dns).unwrap(),
                 [expected.parse().unwrap()]
             );
-            agent(url, &dns).unwrap();
+            agent(url, &dns, UPLOAD_TIMEOUT).unwrap();
         }
     }
 

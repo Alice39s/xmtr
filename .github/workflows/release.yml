@@ -38,6 +38,23 @@ jobs:
       - run: uv run xmtr-ci check release
       - run: uv run xmtr-ci check rust
 
+  msrv:
+    name: MSRV ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --locked
+
   nix:
     runs-on: ubuntu-latest
     steps:
