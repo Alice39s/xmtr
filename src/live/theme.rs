@@ -78,11 +78,11 @@ pub fn palette() -> &'static Palette {
     PALETTE.get_or_init(|| DARK_ANSI)
 }
 
-/// Picks the palette once, before anything is drawn. `auto` asks the terminal for its background
-/// color, then falls back to `COLORFGBG` and finally to a dark background; `COLORTERM` decides
-/// between RGB and ANSI colors.
+/// Picks the palette before anything is drawn; later calls keep the first choice. `auto` asks the
+/// terminal for its background color, then falls back to `COLORFGBG` and finally to a dark
+/// background; `COLORTERM` decides between RGB and ANSI colors.
 pub fn select(choice: ThemeChoice) -> &'static Palette {
-    let chosen = match choice {
+    PALETTE.get_or_init(|| match choice {
         ThemeChoice::Dark => DARK,
         ThemeChoice::Light => LIGHT,
         ThemeChoice::DarkAnsi => DARK_ANSI,
@@ -96,8 +96,7 @@ pub fn select(choice: ThemeChoice) -> &'static Palette {
                 (true, true) => LIGHT,
             }
         }
-    };
-    PALETTE.get_or_init(|| chosen)
+    })
 }
 
 fn background_is_light() -> bool {
@@ -166,6 +165,29 @@ pub fn sweep(width: usize, tick: usize) -> Vec<Span<'static>> {
                 muted("─")
             }
         })
+        .collect()
+}
+
+/// The left margin inside a panel.
+pub const INDENT: &str = " ";
+/// The colored bar in front of a headline.
+pub const CALLOUT: &str = "▍ ";
+
+/// A line set apart by a bar in `color`.
+pub fn callout(color: Color, spans: Vec<Span<'static>>) -> Line<'static> {
+    let mut all = vec![
+        Span::raw(INDENT),
+        Span::styled(CALLOUT, Style::new().fg(color)),
+    ];
+    all.extend(spans);
+    Line::from(all)
+}
+
+/// `text` wrapped to `width` columns, but never narrower than 16.
+pub fn wrapped(text: &str, width: usize) -> Vec<String> {
+    textwrap::wrap(text, width.max(16))
+        .into_iter()
+        .map(String::from)
         .collect()
 }
 

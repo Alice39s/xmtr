@@ -7,6 +7,7 @@
 //!   finished steps and routes as single lines and one status line redrawn in place;
 //! - the plain view, for pipes, logs and `TERM=dumb`: one tagged text line per step and route.
 
+mod console;
 mod events;
 mod line;
 mod plain;
@@ -31,6 +32,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
+pub use self::console::{Console, Note};
 use self::line::LineView;
 use self::plain::PlainView;
 pub use self::result::{Summary, Upload};
@@ -74,6 +76,11 @@ fn stdout_on_terminal() -> bool {
     io::stdout().is_terminal()
 }
 
+/// True when stderr takes plain text only: it is not a terminal, or `TERM=dumb`.
+fn stderr_is_plain() -> bool {
+    !io::stderr().is_terminal() || env::var("TERM").is_ok_and(|term| term == "dumb")
+}
+
 /// The view for `choice`; `auto` takes the panel when stdout is on the terminal and the terminal is
 /// big enough, the line view otherwise, and plain lines when stderr is not a terminal or
 /// `TERM=dumb`.
@@ -83,7 +90,7 @@ fn pick(choice: ProgressChoice) -> Kind {
         ProgressChoice::Line => Kind::Line,
         ProgressChoice::Plain => Kind::Plain,
         ProgressChoice::Auto => {
-            if !io::stderr().is_terminal() || env::var("TERM").is_ok_and(|term| term == "dumb") {
+            if stderr_is_plain() {
                 return Kind::Plain;
             }
             match terminal::size() {

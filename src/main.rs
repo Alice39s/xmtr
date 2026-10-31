@@ -8,6 +8,7 @@ mod model;
 mod output;
 mod plan;
 mod runner;
+mod update;
 mod upload;
 
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ use ratatui::crossterm::style::Stylize;
 use crate::board::Board;
 use crate::cli::{Cli, Command, SelfCommand};
 use crate::dns::Dns;
-use crate::live::Live;
+use crate::live::{Console, Live, Note};
 use crate::runner::Settings;
 
 const DEFAULT_PARALLEL: usize = 8;
@@ -173,24 +174,26 @@ fn table_width(terminal: bool) -> usize {
     ratatui::crossterm::terminal::size().map_or(usize::MAX, |(width, _)| usize::from(width))
 }
 
-fn report(cli: &Cli, report: Report) -> Result<ExitCode> {
+/// What the run left out or could not do; `--quiet` keeps only the routes that failed.
+fn notes(cli: &Cli, report: &Report) -> Vec<Note> {
+    let mut notes = Vec::new();
     if !cli.quiet {
-        for skipped in &report.skipped {
-            eprintln!("skip {skipped}");
-        }
+        notes.extend(report.skipped.iter().cloned().map(Note::Skipped));
     }
-    for failure in &report.failures {
-        eprintln!("error {failure}");
-    }
-    if report.body.routes.is_empty() {
-        anyhow::bail!("no route could be traced");
-    }
+    notes.extend(report.failures.iter().cloned().map(Note::Failed));
     if report.unanswered > 0 && !cli.quiet {
-        eprintln!(
-            "note: no reverse DNS or AS answer in time for {} addresses",
-            report.unanswered
-        );
+        notes.push(Note::Unanswered(report.unanswered));
     }
+    notes
+}
+
+fn report(cli: &Cli, console: Console, report: Report) -> Result<ExitCode> {
+    let notes = notes(cli, &report);
+    if report.body.routes.is_empty() {
+        console.problem(&anyhow::anyhow!("no route could be traced"), None, &notes);
+        return Ok(ExitCode::FAILURE);
+    }
+    console.notes(&notes);
     let mut stdout = Stdout::new();
     // With --json the tables go to stderr so stdout holds only the JSON document.
     if !cli.quiet {
@@ -224,7 +227,7 @@ fn report(cli: &Cli, report: Report) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Err(error)) => {
-            eprintln!("error: {error:#}");
+            console.problem(&error, Some("Upload failed"), &[]);
             Ok(ExitCode::from(2))
         }
     }
@@ -250,6 +253,7 @@ fn live_options(cli: &Cli) -> Result<live::Options> {
 
 /// Hands the report to the live view, which prints it as the result panel.
 fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
+    let notes = notes(cli, &report);
     let (upload, code) = match report.upload {
         None => (live::Upload::Skipped, ExitCode::SUCCESS),
         Some(Ok(accepted)) => (live::Upload::Accepted(accepted), ExitCode::SUCCESS),
@@ -261,9 +265,7 @@ fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
     let link_below = live.finish(Some(live::Summary {
         routes: report.body.routes.clone(),
         upload,
-        skipped: report.skipped,
-        failures: report.failures,
-        unanswered: report.unanswered,
+        notes,
     }))?;
     if let Some(link) = link_below {
         // Plain text the terminal can wrap, beside the panel on stderr.
@@ -275,7 +277,30 @@ fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
     Ok(code)
 }
 
-fn run(cli: &Cli) -> Result<ExitCode> {
+/// Shows the result in the panel when the live view has one, and prints it otherwise.
+fn finish(
+    cli: &Cli,
+    console: Console,
+    live: Option<Live>,
+    result: Result<Report>,
+) -> Result<ExitCode> {
+    let Some(live) = live else {
+        return report(cli, console, result?);
+    };
+    // The panel runs only with stdout on the terminal, so its result replaces the tables printed
+    // there; with `--json` the document still follows on stdout.
+    match result {
+        Ok(report) if live.shows_result() && !report.body.routes.is_empty() => {
+            show_result(cli, live, report)
+        }
+        result => {
+            live.finish(None)?;
+            report(cli, console, result?)
+        }
+    }
+}
+
+fn run(cli: &Cli, console: Console) -> Result<ExitCode> {
     let board = Arc::new(Board::new(&cli.targets));
     let live = if cli.quiet {
         None
@@ -288,26 +313,26 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         ) {
             Ok(live) => Some(live),
             Err(error) => {
-                eprintln!("note: showing results without the live view: {error:#}");
+                console.remark(&format!("showing results without the live view: {error:#}"));
                 None
             }
         }
     };
     let result = work(cli, &board);
-    let Some(live) = live else {
-        return report(cli, result?);
-    };
-    // The panel runs only with stdout on the terminal, so its result replaces the tables printed
-    // there; with `--json` the document still follows on stdout.
-    match result {
-        Ok(report) if live.shows_result() && !report.body.routes.is_empty() => {
-            show_result(cli, live, report)
-        }
-        result => {
-            live.finish(None)?;
-            report(cli, result?)
-        }
+    let traced = result
+        .as_ref()
+        .is_ok_and(|report| !report.body.routes.is_empty());
+    let code = finish(cli, console, live, result)?;
+    if traced
+        && update::wanted(
+            cli,
+            std::io::stdin().is_terminal(),
+            std::io::stderr().is_terminal(),
+        )
+    {
+        return update::offer(console, code);
     }
+    Ok(code)
 }
 
 fn main() -> ExitCode {
@@ -328,6 +353,7 @@ fn main() -> ExitCode {
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
+    let console = Console::new(cli.quiet, cli.progress, cli.theme);
     let result = match &cli.command {
         Some(Command::Manage(SelfCommand::Update { force, tag })) => {
             manage::update(*force, tag.as_deref()).map(|()| ExitCode::SUCCESS)
@@ -335,12 +361,12 @@ fn main() -> ExitCode {
         Some(Command::Manage(SelfCommand::Uninstall)) => {
             manage::uninstall().map(|()| ExitCode::SUCCESS)
         }
-        None => run(&cli),
+        None => run(&cli, console),
     };
     match result {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("error: {error:#}");
+            console.problem(&error, None, &[]);
             ExitCode::FAILURE
         }
     }
