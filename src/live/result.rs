@@ -554,6 +554,7 @@ mod tests {
                 destination: "1.1.1.1".to_owned(),
                 protocol: "icmp",
                 family: 4,
+                source_addr: None,
                 started_at: String::new(),
                 duration_ms: 5100,
                 rounds: 5,

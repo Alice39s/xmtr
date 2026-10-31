@@ -10,10 +10,13 @@ mod plan;
 mod runner;
 mod upload;
 
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::{IsTerminal, Write};
+use std::net::IpAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::thread;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
@@ -80,6 +83,11 @@ fn settings(cli: &Cli, privilege: trippy_core::PrivilegeMode) -> Settings {
     }
 }
 
+/// The public source address of the routes is looked up only for uploads that share their origin.
+fn sends_source(cli: &Cli) -> bool {
+    !cli.hide_origin && !cli.no_upload
+}
+
 /// Resolves, traces, annotates and uploads, recording each step on `board`.
 fn work(cli: &Cli, board: &Board) -> Result<Report> {
     let dns = Dns::new(&cli.dns)?;
@@ -88,7 +96,18 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
     let parallel = cli
         .parallel
         .map_or(DEFAULT_PARALLEL.min(plan.jobs.len()), usize::from);
-    let outcomes = runner::run_all(&plan.jobs, parallel, &settings(cli, plan.privilege), board);
+    let (outcomes, sources) = thread::scope(|scope| {
+        // The source addresses are looked up while the routes are traced.
+        let lookup = sends_source(cli)
+            .then(|| scope.spawn(|| upload::source::lookup(&plan.jobs, &cli.api, &dns)));
+        let outcomes = runner::run_all(&plan.jobs, parallel, &settings(cli, plan.privilege), board);
+        let sources: HashMap<IpAddr, IpAddr> = lookup.map_or_else(HashMap::new, |lookup| {
+            lookup
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+        (outcomes, sources)
+    });
 
     let mut routes = Vec::new();
     let mut failures = Vec::new();
@@ -97,7 +116,14 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
             Ok(route) if silent(&route) => {
                 failures.push(format!("{}: no probe was answered", outcome.label));
             }
-            Ok(route) => routes.push(route),
+            Ok(mut route) => {
+                let destination: IpAddr = route
+                    .destination
+                    .parse()
+                    .expect("routes are traced to IP addresses");
+                route.source_addr = sources.get(&destination).copied();
+                routes.push(route);
+            }
             Err(error) => failures.push(format!("{}: {error:#}", outcome.label)),
         }
     }
@@ -308,6 +334,24 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("error: {error:#}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_address_is_sent_only_with_an_upload_that_shares_its_origin() {
+        let parse = |args: &[&str]| Cli::try_parse_from([&["xmtr"], args, &["1.1.1.1"]].concat());
+        assert!(sends_source(&parse(&[]).unwrap()));
+        for args in [
+            &["--hide-origin"][..],
+            &["--no-upload"],
+            &["--hide-origin", "--no-upload"],
+        ] {
+            assert!(!sends_source(&parse(args).unwrap()), "{args:?}");
         }
     }
 }

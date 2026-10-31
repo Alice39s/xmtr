@@ -15,6 +15,8 @@ pub struct Job {
     pub protocol: Protocol,
     /// Protocol to try next when this one does not reach the target.
     pub fallback: Option<Protocol>,
+    /// Local address the operating system sends packets to `addr` from.
+    pub local: IpAddr,
 }
 
 #[derive(Debug)]
@@ -49,15 +51,16 @@ pub fn privilege_mode(cli: &Cli) -> Result<PrivilegeMode> {
     )
 }
 
-/// True when the OS has a route to `addr`; connecting a UDP socket sends no packet.
-fn has_route(addr: IpAddr) -> bool {
+/// Local address the OS picks for packets to `addr`, or `None` without a route; connecting a UDP
+/// socket sends no packet.
+fn local_addr(addr: IpAddr) -> Option<IpAddr> {
     let bind: SocketAddr = match addr {
         IpAddr::V4(_) => (IpAddr::from([0, 0, 0, 0]), 0).into(),
         IpAddr::V6(_) => (IpAddr::from([0u16; 8]), 0).into(),
     };
-    UdpSocket::bind(bind)
-        .and_then(|socket| socket.connect((addr, 33434)))
-        .is_ok()
+    let socket = UdpSocket::bind(bind).ok()?;
+    socket.connect((addr, 33434)).ok()?;
+    socket.local_addr().ok().map(|local| local.ip())
 }
 
 /// First IPv4 and first IPv6 address of `target`, in the order the resolver returned them.
@@ -110,15 +113,16 @@ pub fn build(cli: &Cli, dns: &Dns) -> Result<Plan> {
             continue;
         }
         for addr in wanted {
-            if !has_route(addr) {
+            let Some(local) = local_addr(addr) else {
                 skipped.push(format!("{target} ({addr}): no route on this machine"));
                 continue;
-            }
+            };
             jobs.push(Job {
                 target: target.clone(),
                 addr,
                 protocol,
                 fallback,
+                local,
             });
         }
     }
