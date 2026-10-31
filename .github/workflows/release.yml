@@ -13,6 +13,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   FORCE_COLOR: "1"
+  # The binaries started here send no reports.
+  DO_NOT_TRACK: "1"
   UV_PROJECT: scripts/ci
   UV_LOCKED: "1"
 
@@ -98,7 +100,10 @@ jobs:
         with:
           tool: ${{ matrix.tool }}
       - uses: ./.github/actions/xmtr-ci
-      - run: uv run xmtr-ci build ${{ matrix.target }}
+      # Builds without the secret, such as pull requests from forks, send no reports.
+      - env:
+          XMTR_TELEMETRY_DSN: ${{ secrets.XMTR_TELEMETRY_DSN }}
+        run: uv run xmtr-ci build ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: xmtr-${{ matrix.target }}
@@ -282,6 +287,17 @@ jobs:
       - env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: uv run xmtr-ci publish crates
+
+  # Errors and usage reports name their release; GlitchTip lists it with its commit.
+  glitchtip:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/xmtr-ci
+      - env:
+          GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
+        run: uv run xmtr-ci publish glitchtip
 
   homebrew:
     needs: release

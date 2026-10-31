@@ -206,6 +206,20 @@ In a terminal, a panel below the prompt numbers these steps (1. Resolve, 2. Trac
 
 `cloudflare`, `google` and `quad9` also work as the host of a URL and include both IPv4 and IPv6 servers. A hostname in a URL is looked up once with the system resolver; certificates are checked against public roots. DNS over HTTPS needs a hostname or an IPv4 address.
 
+## Telemetry
+
+Release binaries send reports to the xmtr project on [GlitchTip](https://glitchtip.com). Builds from source, such as `cargo install` and `nix build`, send nothing unless `XMTR_TELEMETRY_DSN` is set while they compile.
+
+| Report | Sent | Contents |
+| --- | --- | --- |
+| Usage | for one run in 100 that uploads, and for `xmtr self` commands | xmtr version, OS and version (such as Debian 13), CPU architecture, command, duration, whether the run had errors |
+| Error | after a run with errors, when you answer yes | the error messages, xmtr version, OS, CPU architecture |
+| Crash | after a panic, when you answer yes | the panic message and its source location, xmtr version, OS, CPU architecture |
+
+xmtr asks about errors and crashes only when stdin and stderr are a terminal and neither `--json` nor `--quiet` is set. The default answer is no, and without a terminal nothing is sent. Before sending, xmtr replaces IP addresses with `[ip]`; the targets, a resolver or gateway given by hostname, and proxy hosts with `[host]`; the home directory with `~`; user names in paths with `[user]`; and credentials in URLs. Reports do not include the name of your machine or the command line. GlitchTip records the address a report came from, shortened to its network prefix.
+
+`DO_NOT_TRACK=1` turns off every report and question ([Console Do Not Track](https://consoledonottrack.com)).
+
 ## Options
 
 ```text
@@ -240,7 +254,7 @@ Usage: xmtr [OPTIONS] <TARGET>...
 cargo build --release --workspace
 ```
 
-The workspace builds `xmtr` and `xmtr-installer`. `nix build` builds `xmtr` from the flake. Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml`. The workspace builds against a patched trippy-core in `vendor/` that traces IPv4 on Android; see [vendor/README.md](vendor/README.md).
+The workspace builds `xmtr` and `xmtr-installer`. Set `XMTR_TELEMETRY_DSN` to a GlitchTip or Sentry DSN to build with [telemetry](#telemetry). `nix build` builds `xmtr` from the flake. Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml`. The workspace builds against a patched trippy-core in `vendor/` that traces IPv4 on Android; see [vendor/README.md](vendor/README.md).
 
 ## Releasing
 

@@ -86,11 +86,12 @@ impl Note {
     }
 }
 
-/// Reads the reply to a `[Y/n]` question: an empty line, `y` or `yes` means yes, `n` or `no`
-/// means no, in any letter case.
-pub fn answer(reply: &str) -> Option<bool> {
+/// Reads the reply to a yes or no question: `y` or `yes` means yes, `n` or `no` means no, in
+/// any letter case, and an empty line means `default`.
+pub fn answer(reply: &str, default: bool) -> Option<bool> {
     match reply.trim().to_ascii_lowercase().as_str() {
-        "" | "y" | "yes" => Some(true),
+        "" => Some(default),
+        "y" | "yes" => Some(true),
         "n" | "no" => Some(false),
         _ => None,
     }
@@ -327,14 +328,14 @@ impl Console {
     }
 
     /// Asks a yes or no question on stderr and reads the reply from stdin until it is one of the
-    /// replies [`answer`] understands. Enter alone answers yes; the end of input answers no.
-    pub fn ask(self, question: &str) -> io::Result<bool> {
+    /// replies [`answer`] understands. Enter alone answers `default`; the end of input answers no.
+    pub fn ask(self, question: &str, default: bool) -> io::Result<bool> {
         self.palette();
         let prompt = [
             paint("?", palette().accent).bold(),
             Span::raw(" "),
             Span::raw(question.to_owned()).bold(),
-            muted(" [Y/n] "),
+            muted(if default { " [Y/n] " } else { " [y/N] " }),
         ];
         loop {
             emit(|out| self.write(out, &prompt));
@@ -343,10 +344,32 @@ impl Console {
                 eprintln!();
                 return Ok(false);
             }
-            if let Some(yes) = answer(&reply) {
+            if let Some(yes) = answer(&reply, default) {
                 return Ok(yes);
             }
         }
+    }
+
+    /// Asks whether to send the errors of the run, or its crash, to the xmtr developers. Enter
+    /// alone answers no.
+    pub fn offer_report(self, crash: bool) -> io::Result<bool> {
+        self.palette();
+        let about = "The report holds the error, the xmtr version and your system, without IP \
+                     addresses, the hosts you named or your user name. Set DO_NOT_TRACK=1 to skip \
+                     this question.";
+        let lines: Vec<Line<'static>> = wrapped(about, columns().saturating_sub(2))
+            .into_iter()
+            .map(|part| Line::from(vec![Span::raw("  "), muted(part)]))
+            .collect();
+        self.lines(&lines);
+        self.ask(
+            if crash {
+                "xmtr crashed. Send a crash report to help fix it?"
+            } else {
+                "Send an error report to help improve xmtr?"
+            },
+            false,
+        )
     }
 
     /// Announces release `latest`, with the command that installs it when xmtr does not replace
@@ -396,15 +419,20 @@ mod tests {
     use crate::live::tests::screen;
 
     #[test]
-    fn reads_yes_no_replies_with_enter_as_yes() {
-        for yes in ["", "\n", "y\n", "Y", " yes ", "YES\r\n"] {
-            assert_eq!(answer(yes), Some(true), "{yes:?}");
-        }
-        for no in ["n\n", "N", "no", " No\r\n"] {
-            assert_eq!(answer(no), Some(false), "{no:?}");
-        }
-        for unclear in ["maybe", "yy", "0", "nope"] {
-            assert_eq!(answer(unclear), None, "{unclear:?}");
+    fn reads_yes_no_replies_with_enter_as_the_default() {
+        for default in [true, false] {
+            for yes in ["y\n", "Y", " yes ", "YES\r\n"] {
+                assert_eq!(answer(yes, default), Some(true), "{yes:?}");
+            }
+            for no in ["n\n", "N", "no", " No\r\n"] {
+                assert_eq!(answer(no, default), Some(false), "{no:?}");
+            }
+            for unclear in ["maybe", "yy", "0", "nope"] {
+                assert_eq!(answer(unclear, default), None, "{unclear:?}");
+            }
+            for empty in ["", "\n", " \r\n"] {
+                assert_eq!(answer(empty, default), Some(default), "{empty:?}");
+            }
         }
     }
 

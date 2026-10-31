@@ -8,6 +8,7 @@ mod model;
 mod output;
 mod plan;
 mod runner;
+mod telemetry;
 mod update;
 mod upload;
 
@@ -28,6 +29,7 @@ use crate::cli::{Cli, Command, SelfCommand};
 use crate::dns::Dns;
 use crate::live::{Console, Live, Note};
 use crate::runner::Settings;
+use crate::telemetry::Telemetry;
 
 const DEFAULT_PARALLEL: usize = 8;
 
@@ -126,7 +128,10 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
                 route.source_addr = sources.get(&destination).copied();
                 routes.push(route);
             }
-            Err(error) => failures.push(format!("{}: {error:#}", outcome.label)),
+            Err(error) => {
+                telemetry::capture(&error);
+                failures.push(format!("{}: {error:#}", outcome.label));
+            }
         }
     }
     routes.sort_by_key(|route| {
@@ -154,7 +159,11 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
     };
     let upload = (!cli.no_upload && !body.routes.is_empty()).then(|| {
         board.start_upload();
-        upload::upload(&cli.api, &body, &dns)
+        let result = upload::upload(&cli.api, &body, &dns);
+        if let Err(error) = &result {
+            telemetry::capture(error);
+        }
+        result
     });
     Ok(Report {
         skipped: plan.skipped,
@@ -300,7 +309,7 @@ fn finish(
     }
 }
 
-fn run(cli: &Cli, console: Console) -> Result<ExitCode> {
+fn run(cli: &Cli, console: Console, telemetry: &Telemetry) -> Result<ExitCode> {
     let board = Arc::new(Board::new(&cli.targets));
     let live = if cli.quiet {
         None
@@ -313,6 +322,7 @@ fn run(cli: &Cli, console: Console) -> Result<ExitCode> {
         ) {
             Ok(live) => Some(live),
             Err(error) => {
+                telemetry::capture(&error);
                 console.remark(&format!("showing results without the live view: {error:#}"));
                 None
             }
@@ -323,6 +333,8 @@ fn run(cli: &Cli, console: Console) -> Result<ExitCode> {
         .as_ref()
         .is_ok_and(|report| !report.body.routes.is_empty());
     let code = finish(cli, console, live, result)?;
+    // Errors are settled first: a new binary started by the update would leave them unanswered.
+    telemetry.ask();
     if traced
         && update::wanted(
             cli,
@@ -354,6 +366,7 @@ fn main() -> ExitCode {
             .exit();
     }
     let console = Console::new(cli.quiet, cli.progress, cli.theme);
+    let telemetry = Telemetry::start(&cli, console);
     let result = match &cli.command {
         Some(Command::Manage(SelfCommand::Update { force, tag })) => {
             manage::update(*force, tag.as_deref()).map(|()| ExitCode::SUCCESS)
@@ -361,15 +374,18 @@ fn main() -> ExitCode {
         Some(Command::Manage(SelfCommand::Uninstall)) => {
             manage::uninstall().map(|()| ExitCode::SUCCESS)
         }
-        None => run(&cli, console),
+        None => run(&cli, console, &telemetry),
     };
-    match result {
+    let code = match result {
         Ok(code) => code,
         Err(error) => {
+            telemetry::capture(&error);
             console.problem(&error, None, &[]);
             ExitCode::FAILURE
         }
-    }
+    };
+    telemetry.finish();
+    code
 }
 
 #[cfg(test)]

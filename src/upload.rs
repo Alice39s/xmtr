@@ -57,19 +57,37 @@ impl Resolver for PinnedResolver {
     }
 }
 
-fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
-    let config = Agent::config_builder()
+fn config(timeout: Duration) -> Config {
+    Agent::config_builder()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
         // Addresses are pinned to the gateway host, so a redirect elsewhere would reach the wrong server.
         .max_redirects(0)
         .user_agent(USER_AGENT)
-        .build();
-    let connector =
-        ().chain(socks::SocksConnector)
-            .chain(ConnectProxyConnector::default())
-            .chain(TcpConnector::default())
-            .chain(RustlsConnector::default());
+        .build()
+}
+
+/// Connections through the SOCKS or HTTP proxy from the environment, if any, then TLS.
+fn connector() -> impl Connector {
+    ().chain(socks::SocksConnector)
+        .chain(ConnectProxyConnector::default())
+        .chain(TcpConnector::default())
+        .chain(RustlsConnector::default())
+}
+
+/// An agent that resolves with the system and connects like the upload does.
+pub fn proxied_agent(timeout: Duration) -> Agent {
+    Agent::with_parts(config(timeout), connector(), DefaultResolver::default())
+}
+
+/// The host of the proxy the environment configures.
+pub fn proxy_host() -> Option<String> {
+    ureq::Proxy::try_from_env().map(|proxy| proxy.host().to_owned())
+}
+
+fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
+    let config = config(timeout);
+    let connector = connector();
     let uri: Uri = url.parse().with_context(|| format!("parsing {url}"))?;
     let remote_proxy = config
         .proxy()

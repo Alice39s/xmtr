@@ -10,18 +10,17 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::cli::Cli;
+use crate::cli::{self, Cli};
 use crate::live::Console;
-use crate::manage;
+use crate::{manage, telemetry};
 
 /// The update check gives up after this long and the run ends as if there were no update.
 const CHECK_LIMIT: Duration = Duration::from_secs(3);
 
-/// The offer needs someone at the terminal to answer it, so it runs only with stdin and stderr on a
-/// terminal, and not with `--json` or `--quiet`, which keep the output for programs, or with
-/// `--no-upload`, which keeps the run off the network.
-pub fn wanted(cli: &Cli, stdin_terminal: bool, stderr_terminal: bool) -> bool {
-    stdin_terminal && stderr_terminal && !cli.json && !cli.quiet && !cli.no_upload
+/// The offer needs someone at the terminal to answer it, and runs only without `--no-upload`,
+/// which keeps the run off the network.
+pub const fn wanted(cli: &Cli, stdin_terminal: bool, stderr_terminal: bool) -> bool {
+    cli::interactive(cli, stdin_terminal, stderr_terminal) && !cli.no_upload
 }
 
 /// Package managers that own the binary at a path containing the marker, and the command that
@@ -138,7 +137,7 @@ pub fn offer(console: Console, code: ExitCode) -> Result<ExitCode> {
             })
     });
     console.offer(manage::VERSION, &version, command);
-    if command.is_some() || !console.ask("Update now?")? {
+    if command.is_some() || !console.ask("Update now?", true)? {
         return Ok(code);
     }
     let target = exe.clone();
@@ -148,11 +147,12 @@ pub fn offer(console: Console, code: ExitCode) -> Result<ExitCode> {
         })
         .expect("a wait without a limit returns the result");
     if let Err(error) = installed {
+        telemetry::capture(&error);
         console.problem(&error, Some("Update failed"), &[]);
         return Ok(code);
     }
     console.updated(&exe, &version, manage::setcap_command(&exe).as_deref());
-    if !console.ask(&format!("Trace again with {version}?"))? {
+    if !console.ask(&format!("Trace again with {version}?"), true)? {
         return Ok(code);
     }
     io::stdout().flush().context("flushing stdout")?;

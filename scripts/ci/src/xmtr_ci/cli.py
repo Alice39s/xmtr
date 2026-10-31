@@ -3,7 +3,7 @@ from typing import Annotated
 
 import typer
 
-from xmtr_ci import alpine, check, github, publish, release, repos
+from xmtr_ci import alpine, check, github, glitchtip, publish, release, repos
 from xmtr_ci import build as builder
 from xmtr_ci import matrix as matrices
 from xmtr_ci import smoke as smoke_test
@@ -167,6 +167,15 @@ def release_publish(
     tag: Tag, repository: Repository, dist: Path = Path("dist"), notes: Path = Path("notes.md")
 ) -> None:
     release.publish(tag, repository, dist, notes)
+
+
+@publish_app.command("glitchtip", help="Create the release and its deploy on GlitchTip.")
+def publish_glitchtip(
+    tag: Tag,
+    commit: Annotated[str, typer.Option(envvar="GITHUB_SHA", help="Commit of the release.")],
+    token: Annotated[str, typer.Option(envvar="GLITCHTIP_AUTH_TOKEN", show_default=False)],
+) -> None:
+    glitchtip.release(tag.removeprefix("v"), commit, token)
 
 
 @publish_app.command("crates", help="Publish xmtr-release and xmtr to crates.io.")

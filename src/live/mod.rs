@@ -19,6 +19,7 @@ mod theme;
 use std::env;
 use std::io::{self, IsTerminal, Stderr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -45,6 +46,25 @@ const MAX_ROUTE_ROWS: u16 = 12;
 const PANEL_MIN_WIDTH: u16 = 44;
 /// The panel chrome, one route row and the row the cursor returns to.
 const PANEL_MIN_HEIGHT: u16 = progress::CHROME_ROWS + 2;
+const DRAW_THREAD: &str = "live";
+
+/// Set by a panic: the draw thread erases its view and stops reading keys, so the panic message and
+/// any question after it have the terminal to themselves.
+static HALT: AtomicBool = AtomicBool::new(false);
+/// True while the draw thread runs.
+static DRAWING: AtomicBool = AtomicBool::new(false);
+
+/// Stops the draw thread and waits a few frames for it to finish, unless the panic is its own.
+fn halt() {
+    HALT.store(true, Ordering::SeqCst);
+    if thread::current().name() == Some(DRAW_THREAD) {
+        return;
+    }
+    let deadline = Instant::now() + FRAME * 4;
+    while DRAWING.load(Ordering::SeqCst) && Instant::now() < deadline {
+        thread::sleep(FRAME / 8);
+    }
+}
 
 /// What the panel shows besides the board.
 #[derive(Debug, Clone)]
@@ -157,17 +177,23 @@ impl Live {
         let panel = matches!(view, View::Panel(_));
         let previous_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            halt();
             restore();
             previous_hook(info);
         }));
         let (done, finished) = mpsc::channel();
-        let handle = thread::spawn(move || {
-            let result = draw_until(view, raw, &board, &options, &finished);
-            if raw {
-                restore();
-            }
-            result
-        });
+        DRAWING.store(true, Ordering::SeqCst);
+        let handle = thread::Builder::new()
+            .name(DRAW_THREAD.to_owned())
+            .spawn(move || {
+                let result = draw_until(view, raw, &board, &options, &finished);
+                if raw {
+                    restore();
+                }
+                DRAWING.store(false, Ordering::SeqCst);
+                result
+            })
+            .context("starting the live view")?;
         Ok(Self {
             done,
             handle,
@@ -348,6 +374,10 @@ fn draw_until(
     let started = Instant::now();
     let mut tick = 0usize;
     loop {
+        if HALT.load(Ordering::SeqCst) {
+            view.close()?;
+            return Ok(None);
+        }
         let mut state = board.snapshot();
         let elapsed = started.elapsed().as_secs_f64();
         view.draw(&state, options, elapsed, tick)?;

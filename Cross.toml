@@ -1,2 +1,6 @@
+[build.env]
+# The telemetry DSN is read while xmtr compiles inside the cross container.
+passthrough = ["XMTR_TELEMETRY_DSN"]
+
 [target.sparc64-unknown-linux-gnu]
 image = "ghcr.io/cross-rs/sparc64-unknown-linux-gnu:main"

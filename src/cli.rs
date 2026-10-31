@@ -183,6 +183,12 @@ fn interval(value: &str) -> Result<Duration, String> {
     duration_at_least(value, Duration::from_millis(100))
 }
 
+/// True when someone at the terminal can answer questions: stdin and stderr are terminals, and
+/// neither `--json` nor `--quiet` keeps the output for programs.
+pub const fn interactive(cli: &Cli, stdin_terminal: bool, stderr_terminal: bool) -> bool {
+    stdin_terminal && stderr_terminal && !cli.json && !cli.quiet
+}
+
 /// Option combinations that each parse on their own but cannot produce a route together.
 pub fn conflict(cli: &Cli) -> Option<String> {
     // trippy reports a round only when it ends, after at least one interval.
