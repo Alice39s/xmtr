@@ -404,11 +404,12 @@ impl Dns {
     }
 }
 
-/// True for globally routable unicast addresses; AS lookups only make sense for these.
-fn is_public(addr: IpAddr) -> bool {
+/// True for globally routable unicast addresses; AS lookups and route origins only make sense for
+/// these.
+pub fn is_public(addr: IpAddr) -> bool {
     match addr {
         IpAddr::V4(ip) => {
-            let [a, b, ..] = ip.octets();
+            let [a, b, c, _] = ip.octets();
             !(ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
@@ -416,14 +417,18 @@ fn is_public(addr: IpAddr) -> bool {
                 || ip.is_documentation()
                 || ip.is_unspecified()
                 || ip.is_multicast()
+                || a == 0
                 || a >= 240
-                || (a == 100 && (64..128).contains(&b)))
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && (b == 18 || b == 19)))
         }
         IpAddr::V6(ip) => {
             let first = ip.segments()[0];
             !(ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_multicast()
+                || ip.to_ipv4_mapped().is_some()
                 || first & 0xfe00 == 0xfc00
                 || first & 0xffc0 == 0xfe80
                 || (first == 0x2001 && ip.segments()[1] == 0x0db8))
@@ -618,17 +623,30 @@ mod tests {
             "192.168.1.1",
             "172.16.0.1",
             "100.64.0.1",
+            "100.127.255.254",
             "169.254.1.1",
             "127.0.0.1",
+            "0.1.2.3",
+            "192.0.0.9",
+            "198.18.0.1",
+            "198.19.255.254",
             "240.0.0.1",
             "fd00::1",
+            "fc00::1",
             "fe80::1",
             "::1",
+            "::ffff:1.1.1.1",
             "2001:db8::1",
         ] {
             assert!(!is_public(private.parse().unwrap()), "{private}");
         }
-        for public in ["1.1.1.1", "100.128.0.1", "2606:4700::1111"] {
+        for public in [
+            "1.1.1.1",
+            "100.128.0.1",
+            "198.20.0.1",
+            "192.0.1.1",
+            "2606:4700::1111",
+        ] {
             assert!(is_public(public.parse().unwrap()), "{public}");
         }
     }
