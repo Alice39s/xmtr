@@ -1,3 +1,19 @@
+## 0.3.3 (2026-10-31)
+
+### Features
+
+#### Show errors in the style of the result panel
+
+On a terminal, an error that ends a run, such as missing raw socket rights or no target left to trace, and a failed upload appear in a framed panel with the colors of the result panel. Skipped targets and failed routes printed beside the route tables get the icons and colors they have in the panel. Logs, pipes, `--quiet` and `--progress plain` keep the plain `error:` lines, and exit statuses stay the same. ([#34](https://github.com/Alice39s/xmtr/pull/34))
+
+#### Start the fallback protocol beside ICMP after 4 rounds
+
+With `--protocol auto`, a target that ICMP has not reached after 4 rounds is also traced over TCP port 80, or over UDP with unprivileged sockets, while the ICMP trace goes on. Before, the fallback started only once the ICMP route had finished. An ICMP route that ends sooner without the target starts the fallback when it ends. The fallback route gets its own row under the ICMP row in the panel, line and plain views, counts toward `-j`, and is uploaded next to the ICMP route. `--port` now sets the port of `--protocol tcp` only. ([#33](https://github.com/Alice39s/xmtr/pull/33))
+
+#### Offer the latest release after a run
+
+After a run in a terminal, xmtr looks up the latest release, waiting at most 3 seconds. When it is newer, xmtr asks whether to install it and then whether to run the same command again with the new version; Enter answers yes to both. A binary owned by a package manager, or in a directory xmtr cannot write to, gets the command that updates it instead. Runs with `--json`, `--quiet` or `--no-upload`, and runs without a terminal on stdin and stderr, skip the lookup. ([#34](https://github.com/Alice39s/xmtr/pull/34))
+
 ## 0.3.2 (2026-10-31)
 
 ### Features
