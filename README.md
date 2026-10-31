@@ -181,7 +181,7 @@ Tracing needs raw sockets.
 3. A route stops once it has run `--min-rounds` rounds, no new hop has appeared for 3 rounds, and the target answered. A route that never reaches its target gets 5 extra rounds. `--max-rounds` and `--time-limit` are hard limits; a tracer never runs more rounds than fit in the time limit.
 4. With `--protocol auto`, a target that does not answer ICMP is traced again over TCP port 443, or UDP with unprivileged sockets. Both routes are uploaded. A route where no hop answered is reported as an error and left out.
 5. Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. Private addresses are never sent to a resolver given with `--dns`.
-6. The routes are uploaded to `--api`, and xmtr prints the trace ID and the IPMap link. `--pin 2580` adds a four-digit PIN (digits 0-8, no 4) that viewers must enter. `--no-upload` keeps everything local. `--hide-origin` asks the gateway not to store the public address the upload came from; the first hops may still show the network.
+6. The routes are uploaded to `--api`, and xmtr prints the trace ID and the IPMap link. IPMap starts each route at the public address its probes left from. When their local address is not public (private, CGNAT, ULA, link-local or another reserved range), xmtr takes the address the gateway sees on an HTTPS request sent from that local address straight to the gateway, ignoring proxy settings. The request runs during the trace and waits at most 3 seconds; a route without a public source address is uploaded without one. `--pin 2580` adds a four-digit PIN (digits 0-8, no 4) that viewers must enter. `--no-upload` keeps everything local. `--hide-origin` leaves the source address out; the first hops may still show the network.
 
 In a terminal, a panel below the prompt numbers these steps (1. Resolve, 2. Trace, 3. Lookup, 4. Upload, 5. Result) and shows them as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. When the run ends, the panel turns into the result: the IPMap link first, then any notes, then each route as a table, with runs of silent hops folded into one line. The panel is drawn on stderr and needs stdout on the terminal as well. Ctrl-C stops the run and exits with status 130.
 
@@ -223,7 +223,7 @@ Usage: xmtr [OPTIONS] <TARGET>...
     --dns <RESOLVER>                 see DNS above (default auto)
     --no-rdns                        skip reverse DNS and AS lookups
     --no-upload                      print the routes only
-    --hide-origin                    ask the gateway not to store the sender address
+    --hide-origin                    upload without the source address of the routes
     --pin <PIN>                      four digits from 0-8 without 4
     --api <URL>                      upload gateway, also XMTR_API
     --json                           print the upload payload on stdout, tables on stderr
