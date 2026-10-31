@@ -179,7 +179,7 @@ Tracing needs raw sockets.
 1. Every target is resolved. A hostname with both A and AAAA records is traced over IPv4 and IPv6 at the same time, using the first address of each family in resolver order. A family without a local route is skipped.
 2. Up to 8 routes run in parallel (`-j`). Each tracer has its own ICMP identifier, UDP source port and sequence range, so replies never mix between routes.
 3. A route stops once it has run `--min-rounds` rounds, no new hop has appeared for 3 rounds, and the target answered. A route that never reaches its target gets 5 extra rounds. `--max-rounds` and `--time-limit` are hard limits; a tracer never runs more rounds than fit in the time limit.
-4. With `--protocol auto`, a target that does not answer ICMP is traced again over TCP port 443, or UDP with unprivileged sockets. Both routes are uploaded. A route where no hop answered is reported as an error and left out.
+4. With `--protocol auto`, a target that ICMP has not reached after 4 rounds is also traced over TCP port 80, or over UDP with unprivileged sockets. The second route runs beside the ICMP route, gets its own row in the progress view and counts toward `-j`; an ICMP route that ends sooner without the target starts it when it ends. Both routes are uploaded. A route where no hop answered is reported as an error and left out.
 5. Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. Private addresses are never sent to a resolver given with `--dns`.
 6. The routes are uploaded to `--api`, and xmtr prints the trace ID and the IPMap link. IPMap starts each route at the public address its probes left from. When their local address is not public (private, CGNAT, ULA, link-local or another reserved range), xmtr takes the address the gateway sees on an HTTPS request sent from that local address straight to the gateway, ignoring proxy settings. The request runs during the trace and waits at most 3 seconds; a route without a public source address is uploaded without one. `--pin 2580` adds a four-digit PIN (digits 0-8, no 4) that viewers must enter. `--no-upload` keeps everything local. `--hide-origin` leaves the source address out; the first hops may still show the network.
 
@@ -217,7 +217,7 @@ Usage: xmtr [OPTIONS] <TARGET>...
 -t, --time-limit <DURATION>          time limit per route, at least 1s and longer than -i (default 45s)
 -i, --interval <DURATION>            minimum time between rounds, at least 100ms (default 1s)
 -m, --max-ttl <N>                    maximum TTL (default 30)
-    --port <PORT>                    TCP destination port (default 443)
+    --port <PORT>                    destination port for -p tcp (default 443)
 -j, --parallel <N>                   routes traced at the same time
 -u, --unprivileged                   unprivileged sockets (macOS)
     --dns <RESOLVER>                 see DNS above (default auto)

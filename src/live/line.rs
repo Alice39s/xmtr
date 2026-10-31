@@ -265,6 +265,7 @@ mod tests {
 
     fn tracing_state() -> State {
         let row = |stage| Row {
+            id: 0,
             target: "example.org".to_owned(),
             family: 6,
             protocol: Protocol::Icmp,

@@ -8,10 +8,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::theme::{bar, border_text, muted, paint, palette, panel_block, spinner, sweep};
-use super::{Options, steps};
+use super::{Options, events, steps};
 use crate::board::{Phase, Row, Stage, State};
 use crate::convergence::STABLE_ROUNDS;
-use crate::runner::protocol_name;
 
 /// Panel rows besides the route rows: two borders, the step line, two spacers and the footer.
 pub const CHROME_ROWS: u16 = 6;
@@ -47,12 +46,7 @@ fn protocol(row: &Row) -> String {
     if row.stage == Stage::Resolving {
         return String::new();
     }
-    let name = protocol_name(row.protocol).to_uppercase();
-    if row.fallback {
-        format!("v{} ICMP→{name}", row.family)
-    } else {
-        format!("v{} {name}", row.family)
-    }
+    format!("v{} {}", row.family, events::probe(row))
 }
 
 fn status(row: &Row) -> Vec<Span<'static>> {
@@ -264,6 +258,7 @@ mod tests {
 
     fn row(target: &str, stage: Stage, reached: bool) -> Row {
         Row {
+            id: 0,
             target: target.to_owned(),
             family: 4,
             protocol: Protocol::Icmp,
@@ -301,6 +296,27 @@ mod tests {
         assert!(screen.contains("3 rounds · 5.2s"), "{screen}");
         assert!(screen.contains("not reached"), "{screen}");
         assert!(screen.contains("3/8 addresses"), "{screen}");
+    }
+
+    #[test]
+    fn a_fallback_row_shows_its_port_below_the_first_protocol() {
+        let state = State {
+            phase: Phase::Trace,
+            rows: vec![
+                row("example.org", Stage::Tracing, false),
+                Row {
+                    protocol: Protocol::Tcp,
+                    fallback: true,
+                    ..row("example.org", Stage::Queued, false)
+                },
+            ],
+            lookup: (0, 0),
+        };
+        let screen = draw(&state, 80, 2 + CHROME_ROWS);
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(lines[3].contains("example.org v4 ICMP"), "{screen}");
+        assert!(lines[4].contains("example.org v4 TCP:80"), "{screen}");
+        assert!(lines[4].contains("queued"), "{screen}");
     }
 
     #[test]
