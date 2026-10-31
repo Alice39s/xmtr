@@ -76,19 +76,46 @@ fn command_name(cli: &Cli) -> &'static str {
     }
 }
 
-/// The operating system with its distribution and version. Looking them up may start programs
-/// such as `lsb_release`, so it happens only for reports that are sent.
-static SYSTEM: LazyLock<os_info::Info> = LazyLock::new(os_info::get);
-
-fn system_version() -> Option<String> {
-    (*SYSTEM.version() != os_info::Version::Unknown).then(|| SYSTEM.version().to_string())
+/// The operating system or distribution, its version and edition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct System {
+    name: String,
+    version: Option<String>,
+    edition: Option<String>,
 }
+
+#[cfg(not(target_os = "macos"))]
+fn system() -> System {
+    let info = os_info::get();
+    System {
+        name: info.os_type().to_string(),
+        version: (*info.version() != os_info::Version::Unknown).then(|| info.version().to_string()),
+        edition: info.edition().map(str::to_owned),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn system() -> System {
+    use sysctl::Sysctl;
+    System {
+        name: "macOS".to_owned(),
+        // Without the version the report still names the system.
+        version: sysctl::Ctl::new("kern.osproductversion")
+            .and_then(|ctl| ctl.value_string())
+            .ok(),
+        edition: None,
+    }
+}
+
+/// Looking the system up may start programs such as `lsb_release`, so it happens only for reports
+/// that are sent.
+static SYSTEM: LazyLock<System> = LazyLock::new(system);
 
 fn os() -> Context {
     OsContext {
-        name: Some(SYSTEM.os_type().to_string()),
-        version: system_version(),
-        build: SYSTEM.edition().map(str::to_owned),
+        name: Some(SYSTEM.name.clone()),
+        version: SYSTEM.version.clone(),
+        build: SYSTEM.edition.clone(),
         ..OsContext::default()
     }
     .into()
@@ -418,8 +445,8 @@ impl Active {
         let run = sampled.then(|| {
             let name = usage_name(
                 &sentry::release_name!().unwrap_or_default(),
-                &SYSTEM.os_type().to_string(),
-                system_version().as_deref(),
+                &SYSTEM.name,
+                SYSTEM.version.as_deref(),
                 env::consts::ARCH,
             );
             sentry::start_transaction(TransactionContext::new(&name, command_name(cli)))
@@ -458,6 +485,19 @@ mod tests {
         assert_eq!(
             usage_name("xmtr@0.4.0", "Android", None, "aarch64"),
             "xmtr@0.4.0 · Android · aarch64"
+        );
+    }
+
+    #[test]
+    fn names_the_system() {
+        let system = system();
+        assert!(!system.name.is_empty(), "{system:?}");
+        assert!(
+            system
+                .version
+                .as_ref()
+                .is_none_or(|version| !version.is_empty()),
+            "{system:?}"
         );
     }
 
