@@ -3019,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -3048,7 +3048,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr-installer"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "lexopt",
@@ -3059,7 +3059,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr-release"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "flate2",

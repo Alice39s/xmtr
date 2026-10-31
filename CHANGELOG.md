@@ -1,3 +1,17 @@
+## 0.3.4 (2026-10-31)
+
+### Features
+
+#### Ask before sending error and crash reports
+
+After a run with errors, or a crash, xmtr asks whether to send a report to the xmtr developers; the default answer is no, and nothing is sent without a terminal to ask. IP addresses, the hosts you named, your home directory and user names in paths are removed first. One run in 100 that uploads also sends the xmtr version, the OS with its distribution and version, and the CPU architecture. `DO_NOT_TRACK=1` turns off every report and question. See the Telemetry section of the README.
+
+### Fixes
+
+#### Upload the source and destination as their /24 or /48 network
+
+Uploaded routes carried the exact public source address and the exact destination, and a target given as an IP address carried the destination again. They are now cut to their network, the /24 of IPv4 or the /48 of IPv6, such as `203.0.113.0` for `203.0.113.7`, which keeps the place and AS where IPMap draws the ends of the route. `--json` prints the same values; the tables in the terminal still show the full destination.
+
 ## 0.3.3 (2026-10-31)
 
 ### Features

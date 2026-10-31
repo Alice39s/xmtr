@@ -4,7 +4,7 @@ exclude = ["vendor/trippy-core"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ anyhow = "1"
 # Upload uses ureq's unversioned transport API; review the workaround before upgrading.
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "gzip"] }
 # The version must match workspace.package.version; the release workflow checks it.
-xmtr-release = { path = "crates/release", version = "0.3.3" }
+xmtr-release = { path = "crates/release", version = "0.3.4" }
 
 [package]
 name = "xmtr"
