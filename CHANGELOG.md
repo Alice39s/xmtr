@@ -1,3 +1,30 @@
+## 0.3.2 (2026-10-31)
+
+### Features
+
+#### Start routes on the map at the address the trace left from
+
+Each uploaded route carries the public address its probes left from, and IPMap starts the route there rather than at the address the upload came from. When the local address is private or otherwise not public, xmtr asks the gateway over a direct HTTPS connection from that local address, ignoring proxy settings; the lookup runs during the trace and waits at most 3 seconds. `--hide-origin` uploads the routes without this address. ([#32](https://github.com/Alice39s/xmtr/pull/32))
+
+### Fixes
+
+#### Keep custom gateway DNS separate from proxy connections
+
+With `--dns`, uploads no longer connect to the gateway's address and port when
+opening an HTTP or SOCKS proxy connection. Direct uploads and locally resolving
+SOCKS proxies still use the selected gateway resolver. HTTP, SOCKS4a and SOCKS5h
+proxies receive the gateway hostname without a local lookup; proxy endpoints use
+the system resolver.
+([#31](https://github.com/Alice39s/xmtr/pull/31))
+
+#### Upload through SOCKS proxies without hanging
+
+Uploads honor SOCKS proxies configured through `ALL_PROXY` and `all_proxy`.
+SOCKS negotiation, authentication, TLS and the upload response share the request
+timeout, so a proxy that accepts a connection without answering cannot leave the
+upload stuck. Proxy precedence and the HTTP fallback remain unchanged.
+([#31](https://github.com/Alice39s/xmtr/pull/31))
+
 ## 0.3.1 (2026-10-29)
 
 ### Features
