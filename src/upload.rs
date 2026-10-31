@@ -16,7 +16,11 @@ use crate::model::{Problem, Upload, UploadAccepted};
 #[path = "upload/socks.rs"]
 mod socks;
 
+#[path = "upload/source.rs"]
+pub mod source;
+
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 #[cfg(test)]
 #[path = "upload/proxy_tests.rs"]
@@ -59,11 +63,7 @@ fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
         .http_status_as_error(false)
         // Addresses are pinned to the gateway host, so a redirect elsewhere would reach the wrong server.
         .max_redirects(0)
-        .user_agent(concat!(
-            env!("CARGO_PKG_NAME"),
-            "/",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(USER_AGENT)
         .build();
     let connector =
         ().chain(socks::SocksConnector)

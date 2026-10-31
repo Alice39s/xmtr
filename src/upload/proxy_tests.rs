@@ -124,7 +124,7 @@ fn child(api: &str, dns: &str, expectation: &str) -> Command {
 
 // A stuck child is a failure, even if killing it would unblock the proxy. The
 // server waits for client EOF instead of releasing the connection on a timer.
-fn run_child(mut command: Command, limit: Duration) -> Output {
+pub(super) fn run_child(mut command: Command, limit: Duration) -> Output {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + limit;
@@ -145,7 +145,7 @@ fn run_child(mut command: Command, limit: Duration) -> Output {
     }
 }
 
-fn headers(stream: &mut BufReader<TcpStream>) -> String {
+pub(super) fn headers(stream: &mut BufReader<TcpStream>) -> String {
     let mut headers = String::new();
     loop {
         let mut line = String::new();
@@ -158,14 +158,14 @@ fn headers(stream: &mut BufReader<TcpStream>) -> String {
     }
 }
 
-fn accept(listener: TcpListener, production: bool) -> TcpStream {
+pub(super) fn accept(listener: &TcpListener, production: bool) -> TcpStream {
     listener.set_nonblocking(true).unwrap();
     let deadline = Instant::now() + TIMEOUT;
     let stream = loop {
         match listener.accept() {
             Ok((stream, _)) => break stream,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(Instant::now() < deadline, "upload never connected to proxy");
+                assert!(Instant::now() < deadline, "client never connected");
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => panic!("accepting proxy connection: {error}"),
@@ -191,7 +191,7 @@ fn peer_closed(error: &std::io::Error) -> bool {
     )
 }
 
-fn closed(stream: &mut impl Read) {
+pub(super) fn closed(stream: &mut impl Read) {
     // A timed-out client can close with FIN, RST or an abort, depending on the OS and
     // unread reply bytes. Both prove socket disposal. A read timeout or any
     // application byte is still a failure; the child separately asserts the
@@ -267,7 +267,7 @@ fn target(stream: &mut TcpStream, api: &str, version: u8) {
 }
 
 fn serve(listener: TcpListener, protocol: &str, stage: &str, api: &str) {
-    let mut stream = accept(listener, stage == "production-greeting");
+    let mut stream = accept(&listener, stage == "production-greeting");
     if protocol.starts_with("socks4") {
         let mut version = [0];
         stream.read_exact(&mut version).unwrap();

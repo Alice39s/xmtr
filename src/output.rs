@@ -239,6 +239,7 @@ mod tests {
             destination: "192.0.2.10".to_owned(),
             protocol: "icmp",
             family: 4,
+            source_addr: None,
             started_at: String::new(),
             duration_ms: 5200,
             rounds: 5,

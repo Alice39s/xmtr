@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use serde::{Deserialize, Serialize};
 
 /// Body of `POST /api/v1/traces`; field names follow the gateway's xmtr upload schema.
@@ -38,6 +40,9 @@ pub struct Route {
     pub destination: String,
     pub protocol: &'static str,
     pub family: u8,
+    /// Public address the probes left from, the start of the route on the map.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_addr: Option<IpAddr>,
     pub started_at: String,
     pub duration_ms: u64,
     pub rounds: usize,
@@ -91,4 +96,40 @@ pub struct UploadAccepted {
 pub struct Problem {
     pub title: Option<String>,
     pub detail: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(source_addr: Option<&str>) -> Route {
+        Route {
+            target: "one.one.one.one".to_owned(),
+            destination: "1.1.1.1".to_owned(),
+            protocol: "icmp",
+            family: 4,
+            source_addr: source_addr.map(|addr| addr.parse().unwrap()),
+            started_at: String::new(),
+            duration_ms: 5000,
+            rounds: 5,
+            reached: true,
+            hops: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn serializes_the_source_address_only_when_known() {
+        for addr in ["198.51.100.7", "2001:db8::7"] {
+            assert_eq!(
+                serde_json::to_value(route(Some(addr))).unwrap()["sourceAddr"],
+                addr
+            );
+        }
+        assert!(
+            serde_json::to_value(route(None))
+                .unwrap()
+                .get("sourceAddr")
+                .is_none()
+        );
+    }
 }

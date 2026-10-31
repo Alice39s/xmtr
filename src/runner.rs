@@ -178,6 +178,7 @@ fn route_from_state(
         destination: job.addr.to_string(),
         protocol: protocol_name(protocol),
         family: if job.addr.is_ipv4() { 4 } else { 6 },
+        source_addr: None,
         started_at: humantime::format_rfc3339_millis(started).to_string(),
         duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         rounds,

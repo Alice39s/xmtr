@@ -82,8 +82,9 @@ pub struct Cli {
     #[arg(long)]
     pub no_upload: bool,
 
-    /// Ask the gateway not to store this machine's public address as the route origin. The first hops
-    /// are still uploaded and may show the network the trace started from.
+    /// Upload the routes without the public address their probes left from, which IPMap shows as the
+    /// start of each route. The first hops are still uploaded and may show the network the trace
+    /// started from.
     #[arg(long)]
     pub hide_origin: bool,
 
