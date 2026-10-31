@@ -26,13 +26,15 @@ pub enum Stage {
     Done,
 }
 
-/// One row of the view: a target before it resolves, then one traced address.
+/// One row of the view: a target before it resolves, then one traced address and protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
+    /// Identifies the row while fallback rows are inserted above later rows.
+    pub id: usize,
     pub target: String,
     pub family: u8,
     pub protocol: Protocol,
-    /// The first protocol did not reach the target and this is the fallback.
+    /// Traces the fallback protocol beside the first protocol, which had not reached the target.
     pub fallback: bool,
     pub stage: Stage,
     pub rounds: usize,
@@ -42,8 +44,9 @@ pub struct Row {
 }
 
 impl Row {
-    fn resolving(target: &str) -> Self {
+    fn resolving(id: usize, target: &str) -> Self {
         Self {
+            id,
             target: target.to_owned(),
             family: 0,
             protocol: Protocol::Icmp,
@@ -77,7 +80,8 @@ impl Board {
                 phase: Phase::Resolve,
                 rows: targets
                     .iter()
-                    .map(|target| Row::resolving(target))
+                    .enumerate()
+                    .map(|(id, target)| Row::resolving(id, target))
                     .collect(),
                 lookup: (0, 0),
             }),
@@ -100,18 +104,40 @@ impl Board {
         state.phase = Phase::Trace;
         state.rows = jobs
             .iter()
-            .map(|job| Row {
-                target: job.target.clone(),
+            .enumerate()
+            .map(|(id, job)| Row {
                 family: if job.addr.is_ipv4() { 4 } else { 6 },
                 protocol: job.protocol,
                 stage: Stage::Queued,
-                ..Row::resolving(&job.target)
+                ..Row::resolving(id, &job.target)
             })
             .collect();
     }
 
-    pub fn update(&self, index: usize, change: impl FnOnce(&mut Row)) {
-        if let Some(row) = self.lock().rows.get_mut(index) {
+    /// Adds a queued row for the fallback of row `parent` right below it and returns its id.
+    pub fn add_fallback(&self, parent: usize, protocol: Protocol) -> usize {
+        let mut state = self.lock();
+        // Ids count up from 0 and rows are never removed, so the count is a free id.
+        let id = state.rows.len();
+        let position = state
+            .rows
+            .iter()
+            .position(|row| row.id == parent)
+            .expect("a fallback belongs to a row on the board");
+        let parent = &state.rows[position];
+        let row = Row {
+            family: parent.family,
+            protocol,
+            fallback: true,
+            stage: Stage::Queued,
+            ..Row::resolving(id, &parent.target)
+        };
+        state.rows.insert(position + 1, row);
+        id
+    }
+
+    pub fn update(&self, id: usize, change: impl FnOnce(&mut Row)) {
+        if let Some(row) = self.lock().rows.iter_mut().find(|row| row.id == id) {
             change(row);
         }
     }

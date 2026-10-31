@@ -24,7 +24,8 @@ pub struct Cli {
     #[arg(required = true, value_name = "TARGET")]
     pub targets: Vec<String>,
 
-    /// Probe protocol; `auto` starts with ICMP and adds TCP or UDP when ICMP does not reach the target.
+    /// Probe protocol; `auto` starts with ICMP and, when ICMP has not reached the target after 4
+    /// rounds, also traces TCP port 80, or UDP with unprivileged sockets.
     #[arg(short = 'p', long, value_enum, default_value_t = ProtocolChoice::Auto)]
     pub protocol: ProtocolChoice,
 
@@ -56,7 +57,7 @@ pub struct Cli {
     #[arg(short = 'm', long, default_value_t = 30, value_parser = clap::value_parser!(u8).range(1..=254))]
     pub max_ttl: u8,
 
-    /// Destination port for TCP probes.
+    /// Destination port for `--protocol tcp`; the TCP probes of `auto` go to port 80.
     #[arg(long, default_value_t = 443, value_parser = clap::value_parser!(u16).range(1..))]
     pub port: u16,
 

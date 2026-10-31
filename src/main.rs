@@ -93,9 +93,10 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
     let dns = Dns::new(&cli.dns)?;
     let plan = plan::build(cli, &dns)?;
     board.start_trace(&plan.jobs);
-    let parallel = cli
-        .parallel
-        .map_or(DEFAULT_PARALLEL.min(plan.jobs.len()), usize::from);
+    let parallel = cli.parallel.map_or(
+        DEFAULT_PARALLEL.min(runner::route_count(&plan.jobs)),
+        usize::from,
+    );
     let (outcomes, sources) = thread::scope(|scope| {
         // The source addresses are looked up while the routes are traced.
         let lookup = sends_source(cli)
@@ -127,7 +128,14 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
             Err(error) => failures.push(format!("{}: {error:#}", outcome.label)),
         }
     }
-    routes.sort_by_key(|route| (route.target.clone(), route.family, !route.reached));
+    routes.sort_by_key(|route| {
+        (
+            route.target.clone(),
+            route.family,
+            !route.reached,
+            route.protocol,
+        )
+    });
 
     let mut unanswered = 0;
     if !cli.no_rdns && !routes.is_empty() {

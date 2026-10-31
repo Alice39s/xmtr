@@ -1,15 +1,17 @@
 //! Progress told as one line per change, for the views that cannot redraw a panel: the line view
 //! prints these lines above its status line, the plain view prints nothing else.
 
+use trippy_core::Protocol;
+
 use super::Options;
 use crate::board::{Phase, Row, Stage, State};
-use crate::runner::protocol_name;
+use crate::runner::{FALLBACK_TCP_PORT, protocol_name};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// A step started.
     Step(Phase),
-    /// The first protocol did not reach the target; the row now traces with its fallback.
+    /// The first protocol had not reached the target; this fallback row traces beside it.
     Fallback(Row),
     /// A route finished.
     Route(Row),
@@ -77,9 +79,9 @@ pub fn between(before: Option<&State>, after: &State, options: &Options) -> Vec<
     // Before the trace starts the rows are the targets, not the routes, so nothing is compared.
     if after.phase >= Phase::Trace {
         let traced = before.filter(|before| before.phase >= Phase::Trace);
-        for (index, row) in after.rows.iter().enumerate() {
-            let old = traced.and_then(|before| before.rows.get(index));
-            if row.fallback && !old.is_some_and(|old| old.fallback) {
+        for row in &after.rows {
+            let old = traced.and_then(|before| before.rows.iter().find(|old| old.id == row.id));
+            if row.fallback && old.is_none() {
                 events.push(Event::Fallback(row.clone()));
             }
             if row.stage == Stage::Done && !old.is_some_and(|old| old.stage == Stage::Done) {
@@ -99,13 +101,18 @@ pub fn between(before: Option<&State>, after: &State, options: &Options) -> Vec<
     events
 }
 
+/// The protocol of a row, with the port of the TCP fallback: `ICMP`, `UDP` or `TCP:80`.
+pub fn probe(row: &Row) -> String {
+    let name = protocol_name(row.protocol).to_uppercase();
+    if row.fallback && row.protocol == Protocol::Tcp {
+        format!("{name}:{FALLBACK_TCP_PORT}")
+    } else {
+        name
+    }
+}
+
 fn route_name(row: &Row) -> String {
-    format!(
-        "{} v{} {}",
-        row.target,
-        row.family,
-        protocol_name(row.protocol).to_uppercase()
-    )
+    format!("{} v{} {}", row.target, row.family, probe(row))
 }
 
 /// The step the event belongs to, its tone and its text without any decoration.
@@ -125,10 +132,10 @@ pub fn describe(event: &Event, state: &State, options: &Options) -> (Phase, Tone
             Phase::Trace,
             Tone::Warn,
             format!(
-                "{} v{}: ICMP did not reach the target, trying {}",
+                "{} v{}: ICMP has not reached the target, adding {}",
                 row.target,
                 row.family,
-                protocol_name(row.protocol).to_uppercase()
+                probe(row)
             ),
         ),
         Event::Route(row) if row.reached => (
@@ -183,13 +190,12 @@ pub fn traced(state: &State) -> (usize, usize) {
 mod tests {
     use std::time::Duration;
 
-    use trippy_core::Protocol;
-
     use super::*;
     use crate::live::tests::options;
 
     fn row(stage: Stage, fallback: bool) -> Row {
         Row {
+            id: usize::from(fallback),
             target: "1.1.1.1".to_owned(),
             family: 4,
             protocol: if fallback {
@@ -232,20 +238,52 @@ mod tests {
             between(Some(&start), &tracing, &options),
             [Event::Step(Phase::Trace)]
         );
-        let fallback = state(Phase::Trace, vec![row(Stage::Done, true)]);
+        let fallback = state(
+            Phase::Trace,
+            vec![row(Stage::Tracing, false), row(Stage::Queued, true)],
+        );
         assert_eq!(
             between(Some(&tracing), &fallback, &options),
+            [Event::Fallback(row(Stage::Queued, true))]
+        );
+        let done = state(
+            Phase::Trace,
+            vec![row(Stage::Done, false), row(Stage::Done, true)],
+        );
+        assert_eq!(
+            between(Some(&fallback), &done, &options),
             [
-                Event::Fallback(row(Stage::Done, true)),
+                Event::Route(row(Stage::Done, false)),
                 Event::Route(row(Stage::Done, true))
             ]
         );
-        assert!(between(Some(&fallback), &fallback, &options).is_empty());
+        assert!(between(Some(&done), &done, &options).is_empty());
         let lookup = state(Phase::Lookup, vec![row(Stage::Done, true)]);
         let upload = state(Phase::Upload, vec![row(Stage::Done, true)]);
         assert_eq!(
             between(Some(&lookup), &upload, &options),
             [SUMMARY, Event::Step(Phase::Upload)]
+        );
+    }
+
+    #[test]
+    fn rows_below_a_new_fallback_row_keep_their_lines() {
+        let other = Row {
+            id: 2,
+            target: "192.0.2.1".to_owned(),
+            ..row(Stage::Done, false)
+        };
+        let before = state(
+            Phase::Trace,
+            vec![row(Stage::Tracing, false), other.clone()],
+        );
+        let after = state(
+            Phase::Trace,
+            vec![row(Stage::Tracing, false), row(Stage::Queued, true), other],
+        );
+        assert_eq!(
+            between(Some(&before), &after, &options()),
+            [Event::Fallback(row(Stage::Queued, true))]
         );
     }
 
@@ -298,6 +336,18 @@ mod tests {
             describe(&Event::Route(row(Stage::Done, false)), &state, &options());
         assert_eq!((phase, tone), (Phase::Trace, Tone::Good));
         assert_eq!(text, "1.1.1.1 v4 ICMP: reached, 7 rounds, 5.2s");
+        let (_, tone, text) = describe(
+            &Event::Fallback(row(Stage::Queued, true)),
+            &state,
+            &options(),
+        );
+        assert_eq!(tone, Tone::Warn);
+        assert_eq!(
+            text,
+            "1.1.1.1 v4: ICMP has not reached the target, adding TCP:80"
+        );
+        let (_, _, text) = describe(&Event::Route(row(Stage::Done, true)), &state, &options());
+        assert_eq!(text, "1.1.1.1 v4 TCP:80: reached, 7 rounds, 5.2s");
         assert_eq!(number(Phase::Upload, &options()), (4, 5));
         assert_eq!(plural(1, "address"), "1 address");
         assert_eq!(plural(2, "address"), "2 addresses");

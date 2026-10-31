@@ -1,6 +1,7 @@
+use std::collections::VecDeque;
 use std::net::IpAddr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -16,6 +17,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const MAX_SAMPLES: usize = 64;
 const UDP_SOURCE_PORT_BASE: u16 = 41000;
 const SEQUENCE_BLOCK: u16 = 1536;
+/// Destination port of the TCP fallback; `--port` applies to `--protocol tcp`.
+pub const FALLBACK_TCP_PORT: u16 = 80;
+/// Rounds the first protocol has to reach the target before its fallback starts beside it.
+const FALLBACK_AFTER_ROUNDS: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Settings {
@@ -25,6 +30,7 @@ pub struct Settings {
     pub time_limit: Duration,
     pub interval: Duration,
     pub max_ttl: u8,
+    /// Destination port of `--protocol tcp`.
     pub tcp_port: u16,
 }
 
@@ -32,6 +38,16 @@ pub struct Settings {
 pub struct Outcome {
     pub label: String,
     pub result: Result<model::Route>,
+}
+
+/// One tracer to run: the first protocol of a job, or the fallback started beside it.
+#[derive(Debug, Clone, Copy)]
+struct Probe {
+    job: usize,
+    protocol: Protocol,
+    fallback: bool,
+    /// Board row the probe reports to.
+    row: usize,
 }
 
 pub const fn protocol_name(protocol: Protocol) -> &'static str {
@@ -75,7 +91,7 @@ fn tracer_rounds(settings: &Settings) -> usize {
 /// so replies are never attributed to the wrong route.
 fn build_tracer(
     job: &Job,
-    protocol: Protocol,
+    probe: &Probe,
     slot: u16,
     settings: &Settings,
 ) -> Result<trippy_core::Tracer> {
@@ -84,14 +100,15 @@ fn build_tracer(
         .wrapping_mul(97)
         .wrapping_add(slot.wrapping_mul(13))
         .max(1);
-    let port_direction = match protocol {
+    let port_direction = match probe.protocol {
         Protocol::Icmp => PortDirection::None,
         Protocol::Udp => PortDirection::FixedSrc(Port(UDP_SOURCE_PORT_BASE + slot)),
+        Protocol::Tcp if probe.fallback => PortDirection::FixedDest(Port(FALLBACK_TCP_PORT)),
         Protocol::Tcp => PortDirection::FixedDest(Port(settings.tcp_port)),
     };
     Builder::new(job.addr)
         .privilege_mode(settings.privilege)
-        .protocol(protocol)
+        .protocol(probe.protocol)
         .trace_identifier(identifier)
         .port_direction(port_direction)
         .initial_sequence(33434 + (slot % 20) * SEQUENCE_BLOCK)
@@ -187,18 +204,19 @@ fn route_from_state(
     }
 }
 
-/// Runs one tracer until the path is stable, the round limit or the time limit is hit.
+/// Runs one tracer until the path is stable, the round limit or the time limit is hit, telling
+/// `watch` the completed rounds and whether the target answered after every poll.
 fn trace(
     job: &Job,
-    protocol: Protocol,
+    probe: &Probe,
     slot: u16,
     settings: &Settings,
     board: &Board,
-    index: usize,
+    watch: &mut dyn FnMut(usize, bool),
 ) -> Result<model::Route> {
     let started = SystemTime::now();
     let clock = Instant::now();
-    let (tracer, handle) = build_tracer(job, protocol, slot, settings)?
+    let (tracer, handle) = build_tracer(job, probe, slot, settings)?
         .spawn()
         .map_err(|error| anyhow!("{error}"))?;
     let flow = State::default_flow_id();
@@ -213,10 +231,11 @@ fn trace(
         let rounds = state.round_count(flow);
         let is_reached = reached(&state, job.addr);
         convergence.observe(rounds, responders(&state));
-        board.update(index, |row| {
+        board.update(probe.row, |row| {
             row.rounds = rounds;
             row.reached = is_reached;
         });
+        watch(rounds, is_reached);
         let finished = handle.is_finished();
         if finished
             || convergence.is_stable(settings.min_rounds, is_reached)
@@ -232,7 +251,7 @@ fn trace(
             let state = tracer.snapshot();
             return Ok(route_from_state(
                 job,
-                protocol,
+                probe.protocol,
                 &state,
                 state.round_count(flow),
                 started,
@@ -242,57 +261,171 @@ fn trace(
     }
 }
 
-/// Traces all jobs with up to `parallel` tracers at once. A job whose first protocol does not reach the
-/// target is retried with its fallback protocol on the same worker, and both routes are kept.
+/// Routes `jobs` can produce: one per job and one more for each job with a fallback.
+pub fn route_count(jobs: &[Job]) -> usize {
+    jobs.iter()
+        .map(|job| 1 + usize::from(job.fallback.is_some()))
+        .sum()
+}
+
+/// Probes waiting for a tracer, fallbacks first, and the number of probes running.
+#[derive(Debug, Default)]
+struct Queue {
+    fallbacks: VecDeque<Probe>,
+    first: VecDeque<Probe>,
+    running: usize,
+}
+
+/// Hands probes to the workers. A worker with nothing to take waits while a running probe may still
+/// add its fallback.
+#[derive(Debug)]
+struct Scheduler {
+    queue: Mutex<Queue>,
+    changed: Condvar,
+}
+
+/// A probe taken from the scheduler. Dropping it, also while its worker panics, frees its place.
+struct Lease<'a> {
+    probe: Probe,
+    scheduler: &'a Scheduler,
+}
+
+impl Drop for Lease<'_> {
+    fn drop(&mut self) {
+        self.scheduler.lock().running -= 1;
+        self.scheduler.changed.notify_all();
+    }
+}
+
+impl Scheduler {
+    fn new(first: impl IntoIterator<Item = Probe>) -> Self {
+        Self {
+            queue: Mutex::new(Queue {
+                first: first.into_iter().collect(),
+                ..Queue::default()
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The next probe, or `None` once nothing waits and nothing runs.
+    fn next(&self) -> Option<Lease<'_>> {
+        let mut queue = self.lock();
+        loop {
+            if let Some(probe) = queue
+                .fallbacks
+                .pop_front()
+                .or_else(|| queue.first.pop_front())
+            {
+                queue.running += 1;
+                return Some(Lease {
+                    probe,
+                    scheduler: self,
+                });
+            }
+            if queue.running == 0 {
+                return None;
+            }
+            queue = self
+                .changed
+                .wait(queue)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Queues a fallback ahead of the jobs that have not started.
+    fn add_fallback(&self, probe: Probe) {
+        self.lock().fallbacks.push_back(probe);
+        self.changed.notify_one();
+    }
+}
+
+/// Traces all jobs with up to `parallel` tracers at once. When the first protocol of a job has not
+/// reached the target after `FALLBACK_AFTER_ROUNDS` rounds, or ends without reaching it, the
+/// fallback protocol is traced beside it, and both routes are kept.
 pub fn run_all(jobs: &[Job], parallel: usize, settings: &Settings, board: &Board) -> Vec<Outcome> {
-    let next = AtomicUsize::new(0);
     let slots = AtomicUsize::new(0);
+    schedule(jobs, parallel, board, |probe, watch| {
+        // Every tracer takes a new slot: one that outlives its route keeps probing with it.
+        let slot = u16::try_from(slots.fetch_add(1, Ordering::SeqCst) % 1000).unwrap_or(0);
+        trace(&jobs[probe.job], probe, slot, settings, board, watch)
+    })
+}
+
+/// Runs the probes of `jobs` with `trace` on up to `parallel` workers, adding fallbacks as
+/// `run_all` describes.
+fn schedule(
+    jobs: &[Job],
+    parallel: usize,
+    board: &Board,
+    trace: impl Fn(&Probe, &mut dyn FnMut(usize, bool)) -> Result<model::Route> + Sync,
+) -> Vec<Outcome> {
+    let scheduler = Scheduler::new(jobs.iter().enumerate().map(|(index, job)| Probe {
+        job: index,
+        protocol: job.protocol,
+        fallback: false,
+        row: index,
+    }));
     let outcomes = Mutex::new(Vec::new());
 
     thread::scope(|scope| {
-        for _ in 0..parallel.min(jobs.len()).max(1) {
+        for _ in 0..parallel.min(route_count(jobs)).max(1) {
             scope.spawn(|| {
-                loop {
-                    let index = next.fetch_add(1, Ordering::SeqCst);
-                    let Some(job) = jobs.get(index) else { break };
-                    let job_started = Instant::now();
-                    let mut protocol = Some(job.protocol);
-                    let mut first = true;
-                    while let Some(current) = protocol.take() {
-                        let slot =
-                            u16::try_from(slots.fetch_add(1, Ordering::SeqCst) % 1000).unwrap_or(0);
-                        let label = job_label(job, current);
-                        board.update(index, |row| {
-                            row.protocol = current;
-                            row.fallback = !first;
-                            row.stage = Stage::Tracing;
-                            row.rounds = 0;
-                            row.reached = false;
-                            row.started = Some(Instant::now());
-                        });
-                        let result = trace(job, current, slot, settings, board, index);
-                        let retry = first && matches!(&result, Ok(route) if !route.reached);
-                        if let Ok(mut list) = outcomes.lock() {
-                            list.push(Outcome { label, result });
+                while let Some(lease) = scheduler.next() {
+                    let probe = lease.probe;
+                    let job = &jobs[probe.job];
+                    let mut fallback = job.fallback.filter(|_| !probe.fallback);
+                    let mut start_fallback = || {
+                        if let Some(protocol) = fallback.take() {
+                            scheduler.add_fallback(Probe {
+                                job: probe.job,
+                                protocol,
+                                fallback: true,
+                                row: board.add_fallback(probe.row, protocol),
+                            });
                         }
-                        if retry {
-                            protocol = job.fallback;
-                        }
-                        first = false;
-                    }
-                    board.update(index, |row| {
-                        row.stage = Stage::Done;
-                        row.elapsed = job_started.elapsed();
+                    };
+                    let started = Instant::now();
+                    board.update(probe.row, |row| {
+                        row.stage = Stage::Tracing;
+                        row.started = Some(started);
                     });
+                    let result = trace(&probe, &mut |rounds, reached| {
+                        if !reached && rounds >= FALLBACK_AFTER_ROUNDS {
+                            start_fallback();
+                        }
+                    });
+                    if matches!(&result, Ok(route) if !route.reached) {
+                        start_fallback();
+                    }
+                    board.update(probe.row, |row| {
+                        row.stage = Stage::Done;
+                        row.elapsed = started.elapsed();
+                    });
+                    outcomes
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(Outcome {
+                            label: job_label(job, probe.protocol),
+                            result,
+                        });
                 }
             });
         }
     });
-    outcomes.into_inner().unwrap_or_default()
+    outcomes
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
 
     fn settings(time_limit: Duration, interval: Duration) -> Settings {
@@ -334,5 +467,229 @@ mod tests {
                 30
             );
         }
+    }
+
+    fn job(target: &str, fallback: Option<Protocol>) -> Job {
+        Job {
+            target: target.to_owned(),
+            addr: target.parse().unwrap(),
+            protocol: Protocol::Icmp,
+            fallback,
+            local: IpAddr::from([192, 0, 2, 100]),
+        }
+    }
+
+    fn board(jobs: &[Job]) -> Board {
+        let targets: Vec<String> = jobs.iter().map(|job| job.target.clone()).collect();
+        let board = Board::new(&targets);
+        board.start_trace(jobs);
+        board
+    }
+
+    /// The route a tracer returns for `probe` after `rounds` rounds.
+    fn route(jobs: &[Job], probe: &Probe, rounds: usize, reached: bool) -> model::Route {
+        let job = &jobs[probe.job];
+        model::Route {
+            target: job.target.clone(),
+            destination: job.addr.to_string(),
+            protocol: protocol_name(probe.protocol),
+            family: 4,
+            source_addr: None,
+            started_at: String::new(),
+            duration_ms: 0,
+            rounds,
+            reached,
+            hops: Vec::new(),
+        }
+    }
+
+    /// Target, protocol, fallback flag and stage of every row, in the order the view shows them.
+    fn rows(board: &Board) -> Vec<(String, Protocol, bool, Stage)> {
+        board
+            .snapshot()
+            .rows
+            .into_iter()
+            .map(|row| (row.target, row.protocol, row.fallback, row.stage))
+            .collect()
+    }
+
+    fn row(target: &str, protocol: Protocol, fallback: bool) -> (String, Protocol, bool, Stage) {
+        (target.to_owned(), protocol, fallback, Stage::Done)
+    }
+
+    #[test]
+    fn the_tcp_fallback_goes_to_port_80_and_tcp_tracing_to_the_chosen_port() {
+        let job = job("192.0.2.1", Some(Protocol::Tcp));
+        let settings = settings(Duration::from_secs(45), Duration::from_secs(1));
+        let port = |fallback| {
+            let probe = Probe {
+                job: 0,
+                protocol: Protocol::Tcp,
+                fallback,
+                row: 0,
+            };
+            build_tracer(&job, &probe, 3, &settings)
+                .unwrap()
+                .port_direction()
+        };
+        assert_eq!(port(true), PortDirection::FixedDest(Port(80)));
+        assert_eq!(port(false), PortDirection::FixedDest(Port(443)));
+    }
+
+    #[test]
+    fn the_fallback_starts_beside_a_first_protocol_without_the_target_after_4_rounds() {
+        let jobs = [job("192.0.2.1", Some(Protocol::Tcp))];
+        let board = board(&jobs);
+        let (started, fallback_started) = mpsc::channel();
+        let fallback_started = Mutex::new(fallback_started);
+        let outcomes = schedule(&jobs, 2, &board, |probe, watch| {
+            if probe.fallback {
+                started.send(()).unwrap();
+                return Ok(route(&jobs, probe, 7, true));
+            }
+            for round in 1..FALLBACK_AFTER_ROUNDS {
+                watch(round, false);
+            }
+            assert_eq!(board.snapshot().rows.len(), 1, "no fallback before round 4");
+            watch(FALLBACK_AFTER_ROUNDS, false);
+            fallback_started
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the fallback starts while ICMP is still tracing");
+            // ICMP reaching the target later keeps the fallback route.
+            watch(FALLBACK_AFTER_ROUNDS + 2, true);
+            Ok(route(&jobs, probe, 9, true))
+        });
+        let mut labels: Vec<&str> = outcomes
+            .iter()
+            .map(|outcome| outcome.label.as_str())
+            .collect();
+        labels.sort_unstable();
+        assert_eq!(labels, ["192.0.2.1 IPv4/ICMP", "192.0.2.1 IPv4/TCP"]);
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| outcome.result.as_ref().is_ok_and(|route| route.reached))
+        );
+        assert_eq!(
+            rows(&board),
+            [
+                row("192.0.2.1", Protocol::Icmp, false),
+                row("192.0.2.1", Protocol::Tcp, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_first_protocol_that_reaches_the_target_by_round_4_runs_alone() {
+        let jobs = [job("192.0.2.1", Some(Protocol::Tcp))];
+        let board = board(&jobs);
+        let outcomes = schedule(&jobs, 2, &board, |probe, watch| {
+            assert!(!probe.fallback, "a reached target needs no fallback");
+            for round in 1..FALLBACK_AFTER_ROUNDS {
+                watch(round, false);
+            }
+            for round in FALLBACK_AFTER_ROUNDS..10 {
+                watch(round, true);
+            }
+            Ok(route(&jobs, probe, 9, true))
+        });
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(rows(&board), [row("192.0.2.1", Protocol::Icmp, false)]);
+    }
+
+    #[test]
+    fn one_tracer_runs_each_fallback_after_its_first_protocol_and_before_later_jobs() {
+        let jobs = [
+            job("192.0.2.1", Some(Protocol::Udp)),
+            job("192.0.2.2", Some(Protocol::Udp)),
+        ];
+        let board = board(&jobs);
+        let order = Mutex::new(Vec::new());
+        let outcomes = schedule(&jobs, 1, &board, |probe, watch| {
+            order.lock().unwrap().push((probe.job, probe.protocol));
+            // Ends without the target before round 4, as a short time limit does.
+            watch(2, false);
+            Ok(route(&jobs, probe, 2, false))
+        });
+        assert_eq!(
+            order.into_inner().unwrap(),
+            [
+                (0, Protocol::Icmp),
+                (0, Protocol::Udp),
+                (1, Protocol::Icmp),
+                (1, Protocol::Udp)
+            ]
+        );
+        assert_eq!(outcomes.len(), 4);
+        assert_eq!(
+            rows(&board),
+            [
+                row("192.0.2.1", Protocol::Icmp, false),
+                row("192.0.2.1", Protocol::Udp, true),
+                row("192.0.2.2", Protocol::Icmp, false),
+                row("192.0.2.2", Protocol::Udp, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn parallel_limits_the_running_tracers_fallbacks_included() {
+        let jobs: Vec<Job> = (1..=4)
+            .map(|n| job(&format!("192.0.2.{n}"), Some(Protocol::Tcp)))
+            .collect();
+        assert_eq!(route_count(&jobs), 8);
+        assert_eq!(route_count(&[job("192.0.2.1", None)]), 1);
+        let board = board(&jobs);
+        let running = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let outcomes = schedule(&jobs, 3, &board, |probe, watch| {
+            peak.fetch_max(running.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            for round in 1..=6 {
+                watch(round, false);
+                thread::sleep(Duration::from_millis(5));
+            }
+            running.fetch_sub(1, Ordering::SeqCst);
+            Ok(route(&jobs, probe, 6, false))
+        });
+        assert_eq!(outcomes.len(), 8);
+        assert!(peak.into_inner() <= 3);
+        let rows = rows(&board);
+        for (pair, n) in rows.chunks(2).zip(1..) {
+            let target = format!("192.0.2.{n}");
+            assert_eq!(
+                pair,
+                [
+                    row(&target, Protocol::Icmp, false),
+                    row(&target, Protocol::Tcp, true)
+                ]
+            );
+        }
+    }
+
+    /// macOS gives every user ICMP sockets, so this traces loopback for real.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn loopback_answers_icmp_and_starts_no_fallback() {
+        let jobs = [Job {
+            local: IpAddr::from([127, 0, 0, 1]),
+            ..job("127.0.0.1", Some(Protocol::Udp))
+        }];
+        let board = board(&jobs);
+        let settings = Settings {
+            privilege: PrivilegeMode::Unprivileged,
+            min_rounds: 1,
+            max_rounds: 10,
+            time_limit: Duration::from_secs(10),
+            interval: Duration::from_millis(100),
+            max_ttl: 4,
+            tcp_port: 443,
+        };
+        let outcomes = run_all(&jobs, 2, &settings, &board);
+        assert_eq!(outcomes.len(), 1);
+        let route = outcomes[0].result.as_ref().unwrap();
+        assert_eq!((route.protocol, route.reached), ("icmp", true));
+        assert_eq!(rows(&board), [row("127.0.0.1", Protocol::Icmp, false)]);
     }
 }
