@@ -21,6 +21,10 @@ versioned_files = [
   { path = "Cargo.lock", dependency = "xmtr-release" },
   { path = "Cargo.lock", dependency = "xmtr-installer" },
   { path = "README.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
+  { path = "docs/zh-CN.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
+  { path = "docs/zh-TW.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
+  { path = "docs/zh-HK.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
+  { path = "docs/zh-MO.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
 ]
 changelog = "CHANGELOG.md"
 

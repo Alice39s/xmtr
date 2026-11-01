@@ -1,3 +1,4 @@
+from xmtr_ci import translations
 from xmtr_ci.project import ROOT
 from xmtr_ci.shell import run
 
@@ -28,3 +29,4 @@ def scripts() -> None:
     run("ruff", "format", "--check", cwd=CI)
     run("ty", "check", cwd=CI)
     run("pytest", cwd=CI)
+    translations.check()
