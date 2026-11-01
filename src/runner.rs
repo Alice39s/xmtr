@@ -7,8 +7,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
 use trippy_core::{
-    Builder, Extension, Extensions, IcmpExtensionParseMode, Port, PortDirection, PrivilegeMode,
-    ProbeStatus, Protocol, Round, State,
+    Builder, Extension, Extensions, IcmpExtensionParseMode, MultipathStrategy, Port, PortDirection,
+    PrivilegeMode, ProbeStatus, Protocol, Round, State,
 };
 
 use crate::board::{Board, Stage};
@@ -90,6 +90,18 @@ fn tracer_rounds(settings: &Settings) -> usize {
         .min(usize::try_from(fit).unwrap_or(usize::MAX))
 }
 
+/// Classic UDP probes change the destination port with every probe, so a router that balances
+/// flows over parallel links sends each hop's probe down a different link and the route mixes
+/// hops of several paths. Paris traceroute keeps every probe of a round on one flow, and tells the
+/// probes apart by a UDP checksum that it sets through the payload, which needs raw sockets.
+/// trippy has no flow-stable mode for ICMP or TCP.
+const fn multipath_strategy(protocol: Protocol, privilege: PrivilegeMode) -> MultipathStrategy {
+    match (protocol, privilege) {
+        (Protocol::Udp, PrivilegeMode::Privileged) => MultipathStrategy::Paris,
+        _ => MultipathStrategy::Classic,
+    }
+}
+
 /// Every concurrent tracer gets its own ICMP identifier, UDP source port and sequence range,
 /// so replies are never attributed to the wrong route.
 fn build_tracer(
@@ -110,6 +122,7 @@ fn build_tracer(
         Protocol::Tcp => PortDirection::FixedDest(Port(settings.tcp_port)),
     };
     Builder::new(job.addr)
+        .multipath_strategy(multipath_strategy(probe.protocol, settings.privilege))
         .privilege_mode(settings.privilege)
         .protocol(probe.protocol)
         .trace_identifier(identifier)
@@ -605,6 +618,34 @@ mod tests {
         assert_eq!(second.best, Some(Duration::from_millis(90)));
         assert_eq!(second.mpls.len(), 1);
         assert_eq!(log.len(), 2);
+    }
+
+    #[test]
+    fn holds_the_udp_flow_only_with_raw_sockets() {
+        for (protocol, privilege, strategy) in [
+            (
+                Protocol::Udp,
+                PrivilegeMode::Privileged,
+                MultipathStrategy::Paris,
+            ),
+            (
+                Protocol::Udp,
+                PrivilegeMode::Unprivileged,
+                MultipathStrategy::Classic,
+            ),
+            (
+                Protocol::Icmp,
+                PrivilegeMode::Privileged,
+                MultipathStrategy::Classic,
+            ),
+            (
+                Protocol::Tcp,
+                PrivilegeMode::Privileged,
+                MultipathStrategy::Classic,
+            ),
+        ] {
+            assert_eq!(multipath_strategy(protocol, privilege), strategy);
+        }
     }
 
     #[test]
