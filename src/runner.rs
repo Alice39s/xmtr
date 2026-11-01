@@ -1,12 +1,15 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
-use trippy_core::{Builder, Port, PortDirection, PrivilegeMode, Protocol, State};
+use trippy_core::{
+    Builder, Extension, Extensions, IcmpExtensionParseMode, MultipathStrategy, Port, PortDirection,
+    PrivilegeMode, ProbeStatus, Protocol, Round, State,
+};
 
 use crate::board::{Board, Stage};
 use crate::convergence::Convergence;
@@ -87,6 +90,18 @@ fn tracer_rounds(settings: &Settings) -> usize {
         .min(usize::try_from(fit).unwrap_or(usize::MAX))
 }
 
+/// Classic UDP probes change the destination port with every probe, so a router that balances
+/// flows over parallel links sends each hop's probe down a different link and the route mixes
+/// hops of several paths. Paris traceroute keeps every probe of a round on one flow, and tells the
+/// probes apart by a UDP checksum that it sets through the payload, which needs raw sockets.
+/// trippy has no flow-stable mode for ICMP or TCP.
+const fn multipath_strategy(protocol: Protocol, privilege: PrivilegeMode) -> MultipathStrategy {
+    match (protocol, privilege) {
+        (Protocol::Udp, PrivilegeMode::Privileged) => MultipathStrategy::Paris,
+        _ => MultipathStrategy::Classic,
+    }
+}
+
 /// Every concurrent tracer gets its own ICMP identifier, UDP source port and sequence range,
 /// so replies are never attributed to the wrong route.
 fn build_tracer(
@@ -107,6 +122,7 @@ fn build_tracer(
         Protocol::Tcp => PortDirection::FixedDest(Port(settings.tcp_port)),
     };
     Builder::new(job.addr)
+        .multipath_strategy(multipath_strategy(probe.protocol, settings.privilege))
         .privilege_mode(settings.privilege)
         .protocol(probe.protocol)
         .trace_identifier(identifier)
@@ -116,8 +132,59 @@ fn build_tracer(
         .max_ttl(settings.max_ttl)
         .min_round_duration(settings.interval)
         .max_round_duration(settings.interval.max(Duration::from_millis(1000)))
+        // RFC 4950 label stacks show which hops forwarded the probe inside an MPLS tunnel, where
+        // every hop reports the round trip through the end of the tunnel.
+        .icmp_extension_parse_mode(IcmpExtensionParseMode::Enabled)
         .build()
         .map_err(|error| anyhow!("{error}"))
+}
+
+/// What the replies of one host at one TTL said: trippy keeps the round trips and the ICMP
+/// extensions per TTL only, mixing the hosts that answered there.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct HostReplies {
+    best: Option<Duration>,
+    mpls: Vec<model::MplsLabel>,
+}
+
+type HostLog = HashMap<(u8, IpAddr), HostReplies>;
+
+/// The MPLS label stack in a reply's ICMP extensions, top entry first.
+fn mpls_stack(extensions: &Extensions) -> Option<Vec<model::MplsLabel>> {
+    extensions
+        .extensions
+        .iter()
+        .find_map(|extension| match extension {
+            Extension::Mpls(stack) => Some(
+                stack
+                    .members
+                    .iter()
+                    .map(|member| model::MplsLabel {
+                        label: member.label,
+                        tc: member.exp,
+                        bottom: member.bos != 0,
+                        ttl: member.ttl,
+                    })
+                    .collect(),
+            ),
+            Extension::Unknown(_) => None,
+        })
+}
+
+/// Adds the replies of a finished round to `log`.
+fn record_round(log: &mut HostLog, round: &Round<'_>) {
+    for probe in round.probes {
+        let ProbeStatus::Complete(reply) = probe else {
+            continue;
+        };
+        let entry = log.entry((reply.ttl.0, reply.host)).or_default();
+        if let Ok(rtt) = reply.received.duration_since(reply.sent) {
+            entry.best = Some(entry.best.map_or(rtt, |best| best.min(rtt)));
+        }
+        if let Some(stack) = reply.extensions.as_ref().and_then(mpls_stack) {
+            entry.mpls = stack;
+        }
+    }
 }
 
 fn responders(state: &State) -> Vec<(u8, IpAddr)> {
@@ -139,11 +206,13 @@ fn round_ms(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0
 }
 
-/// Converts trippy's per-hop state into the upload model, stopping at the hop that answered for the target.
+/// Converts trippy's per-hop state and the per-host replies into the upload model, stopping at the
+/// hop that answered for the target.
 fn route_from_state(
     job: &Job,
     protocol: Protocol,
     state: &State,
+    replies: &HostLog,
     rounds: usize,
     started: SystemTime,
     elapsed: Duration,
@@ -171,11 +240,18 @@ fn route_from_state(
                 ttl: hop.ttl(),
                 hosts: hop
                     .addrs_with_counts()
-                    .map(|(addr, count)| model::Host {
-                        ip: addr.to_string(),
-                        hostname: None,
-                        asn: None,
-                        replies: *count,
+                    .map(|(addr, count)| {
+                        let host = replies.get(&(hop.ttl(), *addr));
+                        model::Host {
+                            ip: addr.to_string(),
+                            hostname: None,
+                            asn: None,
+                            replies: *count,
+                            best_ms: host
+                                .and_then(|host| host.best)
+                                .map(|best| round_ms(best.as_secs_f64() * 1000.0)),
+                            mpls: host.map(|host| host.mpls.clone()).unwrap_or_default(),
+                        }
                     })
                     .collect(),
                 sent: hop.total_sent(),
@@ -216,8 +292,15 @@ fn trace(
 ) -> Result<model::Route> {
     let started = SystemTime::now();
     let clock = Instant::now();
+    let replies = Arc::new(Mutex::new(HostLog::new()));
+    let log = Arc::clone(&replies);
     let (tracer, handle) = build_tracer(job, probe, slot, settings)?
-        .spawn()
+        .spawn_with(move |round| {
+            record_round(
+                &mut log.lock().unwrap_or_else(PoisonError::into_inner),
+                round,
+            );
+        })
         .map_err(|error| anyhow!("{error}"))?;
     let flow = State::default_flow_id();
     let mut convergence = Convergence::default();
@@ -249,10 +332,15 @@ fn trace(
             }
             // A tracer that is still running ends on its own after `tracer_rounds` rounds.
             let state = tracer.snapshot();
+            let replies = replies
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
             return Ok(route_from_state(
                 job,
                 probe.protocol,
                 &state,
+                &replies,
                 state.round_count(flow),
                 started,
                 clock.elapsed(),
@@ -437,6 +525,126 @@ mod tests {
             interval,
             max_ttl: 30,
             tcp_port: 443,
+        }
+    }
+
+    fn reply(ttl: u8, host: &str, rtt_ms: u64, labels: &[u32]) -> ProbeStatus {
+        use trippy_core::{
+            IcmpPacketType, MplsLabelStack, MplsLabelStackMember, ProbeComplete, RoundId, Sequence,
+            TimeToLive, TraceId,
+        };
+        let sent = SystemTime::UNIX_EPOCH;
+        let extensions = (!labels.is_empty()).then(|| Extensions {
+            extensions: vec![Extension::Mpls(MplsLabelStack {
+                members: labels
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| MplsLabelStackMember {
+                        label: *label,
+                        exp: 0,
+                        bos: u8::from(index + 1 == labels.len()),
+                        ttl: 1,
+                    })
+                    .collect(),
+            })],
+        });
+        ProbeStatus::Complete(ProbeComplete {
+            sequence: Sequence(33434),
+            identifier: TraceId(1),
+            src_port: Port(0),
+            dest_port: Port(0),
+            ttl: TimeToLive(ttl),
+            round: RoundId(0),
+            sent,
+            host: host.parse().unwrap(),
+            received: sent + Duration::from_millis(rtt_ms),
+            icmp_packet_type: IcmpPacketType::NotApplicable,
+            tos: None,
+            expected_udp_checksum: None,
+            actual_udp_checksum: None,
+            extensions,
+        })
+    }
+
+    fn record(log: &mut HostLog, probes: &[ProbeStatus]) {
+        record_round(
+            log,
+            &Round::new(
+                probes,
+                trippy_core::TimeToLive(8),
+                trippy_core::CompletionReason::TargetFound,
+            ),
+        );
+    }
+
+    #[test]
+    fn keeps_each_hosts_best_round_trip_and_latest_label_stack() {
+        let mut log = HostLog::new();
+        record(
+            &mut log,
+            &[
+                reply(5, "192.0.2.1", 40, &[24001, 16]),
+                reply(5, "192.0.2.2", 90, &[]),
+                ProbeStatus::NotSent,
+            ],
+        );
+        record(
+            &mut log,
+            &[
+                reply(5, "192.0.2.1", 35, &[]),
+                reply(5, "192.0.2.2", 95, &[30002]),
+            ],
+        );
+        let first = &log[&(5, "192.0.2.1".parse().unwrap())];
+        assert_eq!(first.best, Some(Duration::from_millis(35)));
+        assert_eq!(
+            first.mpls,
+            [
+                model::MplsLabel {
+                    label: 24001,
+                    tc: 0,
+                    bottom: false,
+                    ttl: 1
+                },
+                model::MplsLabel {
+                    label: 16,
+                    tc: 0,
+                    bottom: true,
+                    ttl: 1
+                },
+            ]
+        );
+        let second = &log[&(5, "192.0.2.2".parse().unwrap())];
+        assert_eq!(second.best, Some(Duration::from_millis(90)));
+        assert_eq!(second.mpls.len(), 1);
+        assert_eq!(log.len(), 2);
+    }
+
+    #[test]
+    fn holds_the_udp_flow_only_with_raw_sockets() {
+        for (protocol, privilege, strategy) in [
+            (
+                Protocol::Udp,
+                PrivilegeMode::Privileged,
+                MultipathStrategy::Paris,
+            ),
+            (
+                Protocol::Udp,
+                PrivilegeMode::Unprivileged,
+                MultipathStrategy::Classic,
+            ),
+            (
+                Protocol::Icmp,
+                PrivilegeMode::Privileged,
+                MultipathStrategy::Classic,
+            ),
+            (
+                Protocol::Tcp,
+                PrivilegeMode::Privileged,
+                MultipathStrategy::Classic,
+            ),
+        ] {
+            assert_eq!(multipath_strategy(protocol, privilege), strategy);
         }
     }
 

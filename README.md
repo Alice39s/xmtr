@@ -188,6 +188,8 @@ A run has five steps, numbered the same way in the progress panel.
 2. **Trace.** Up to 8 routes run in parallel (`-j`). Each tracer has its own ICMP identifier, UDP source port and sequence range, so replies never mix between routes. A route stops once it has run `--min-rounds` rounds, no new hop has appeared for 3 rounds, and the target answered. A route that never reaches its target gets 5 extra rounds. `--max-rounds` and `--time-limit` are hard limits; a tracer never runs more rounds than fit in the time limit.
 
    With `--protocol auto`, a target that ICMP has not reached after 4 rounds is also traced over TCP port 80, or over UDP with unprivileged sockets. The second route runs beside the ICMP route, gets its own row in the progress view and counts toward `-j`; an ICMP route that ends sooner without the target starts it when it ends. Both routes are uploaded. A route where no hop answered is reported as an error and left out.
+
+   UDP over raw sockets traces the Paris way: every probe of a round has the same ports and UDP checksum, so a router that spreads flows over parallel links sends the whole round down one of them, and each round shows one real path. ICMP, TCP and UDP over unprivileged sockets send classic probes.
 3. **Lookup.** Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. The step ends after 5 seconds at the latest, and the result notes how many addresses did not answer. Private addresses are never sent to a resolver given with `--dns`. `--no-rdns` skips this step.
 4. **Upload.** The routes are uploaded to `--api`; see [Upload and sharing](#upload-and-sharing). `--no-upload` skips this step.
 5. **Result.** The IPMap link, any notes, and one table per route.
@@ -205,6 +207,8 @@ In a terminal, a panel below the prompt shows the steps as they run: which step 
 | `panel` | stdout and stderr are on a terminal of at least 44 columns and 8 rows that reports its cursor position | the panel described above |
 | `line` | stdout is redirected, or the terminal is smaller or does not report its cursor position | finished steps and routes as single lines above one status line, then the tables and the link |
 | `plain` | stderr is not a terminal, or `TERM=dumb` | one line per step and finished route, such as `[2/5] 1.1.1.1 v4 ICMP: reached, 7 rounds, 5.2s`, and the current state every 10 seconds while nothing changes |
+
+A router that forwarded the probe inside an MPLS tunnel and quoted the label stack in its reply ([RFC 4950](https://www.rfc-editor.org/rfc/rfc4950)) gets one line per label under its address, such as `[MPLS: Lbl 24001 TC 0 S 1 TTL 1]`, the form `mtr -e` prints. Every router inside a tunnel reports about the round trip of the tunnel's last router, because its reply travels to the end of the tunnel before it turns back.
 
 A table that does not fit the terminal, even with long host names wrapped, becomes one line per hop with the host, the average round trip and any loss. `--quiet` turns progress off and prints only the link.
 
@@ -261,7 +265,7 @@ The upload returns a trace ID and a link to its map. The trace ID is a snowflake
 
 IPMap starts each route at the public address its probes left from. When their local address is not public (private, CGNAT, ULA, link-local or another reserved range), xmtr takes the address the gateway sees on an HTTPS request sent from that local address straight to the gateway, ignoring proxy settings. The request runs during the trace and waits at most 3 seconds; a route without a public source address is uploaded without one.
 
-The upload carries the source address, the destination and a target given as an IP address cut to their network, the /24 of IPv4 or the /48 of IPv6, such as `203.0.113.0` for `203.0.113.7` and `2001:db8:1::` for `2001:db8:1:2::7`. The hops keep their full addresses, and the tables in the terminal show the full destination.
+The upload carries the source address, the destination and a target given as an IP address cut to their network, the /24 of IPv4 or the /48 of IPv6, such as `203.0.113.0` for `203.0.113.7` and `2001:db8:1::` for `2001:db8:1:2::7`. The hops keep their full addresses, and the tables in the terminal show the full destination. Each address at a hop also carries the lowest round trip of its own replies and the MPLS label stack it quoted.
 
 ### DNS
 
