@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "jinja2>=3.1.6",
     "markdown-it-py>=4.0.0",
+    "opencc-py>=1.4.2",
     "packaging>=26.3",
     "pydantic>=2.14.1",
     "pydantic-settings>=2.16.0",

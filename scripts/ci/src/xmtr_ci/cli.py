@@ -3,7 +3,7 @@ from typing import Annotated
 
 import typer
 
-from xmtr_ci import alpine, check, github, glitchtip, publish, release, repos
+from xmtr_ci import alpine, check, github, glitchtip, publish, release, repos, translations
 from xmtr_ci import build as builder
 from xmtr_ci import matrix as matrices
 from xmtr_ci import smoke as smoke_test
@@ -78,6 +78,11 @@ def check_rust(fmt: Annotated[bool, typer.Option(help="Also check formatting.")]
 @check_app.command("scripts", help="Lint the shell, Node.js and Python sources and run pytest.")
 def check_scripts() -> None:
     check.scripts()
+
+
+@app.command("docs", help="Write the Traditional Chinese READMEs from docs/zh-CN.md with OpenCC.")
+def write_docs() -> None:
+    listing(translations.write())
 
 
 @check_app.command("release", help="Validate the knope versions and the release tag.")
