@@ -21,6 +21,7 @@ Package metadata that is not JSON comes from the Jinja templates in `src/xmtr_ci
 | `alpine aport` | Writes the APKBUILD for a published release |
 | `alpine build` | Builds and installs the APKBUILD for the current commit in Alpine edge |
 | `verify` | Installs a published release through each channel and checks `xmtr --version` |
+| `docs` | Writes `docs/zh-TW.md`, `zh-HK.md` and `zh-MO.md` from `docs/zh-CN.md` with OpenCC |
 
 Check the project before you commit:
 
