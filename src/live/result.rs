@@ -260,6 +260,18 @@ impl Table {
                 spans.extend(self.metrics.iter().map(|metric| metric.cell(hop)));
             }
             lines.push(Line::from(spans));
+            // A label stack goes under its host and may run into the empty cells beside it.
+            let room = self
+                .width()
+                .saturating_sub(INDENT.len() + 2 + HOP_WIDTH + GAP);
+            for label in host.iter().flat_map(|host| &host.mpls) {
+                lines.push(Line::from(vec![
+                    Span::raw(INDENT),
+                    Span::raw(" ".repeat(2 + HOP_WIDTH)),
+                    Span::raw(gap.clone()),
+                    muted(clip(&label.text(), room)),
+                ]));
+            }
         }
         lines
     }
@@ -291,6 +303,16 @@ impl Table {
             }
         }
     }
+}
+
+/// `text` cut to `room` characters, ending with an ellipsis when something was cut.
+fn clip(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(room.saturating_sub(1)).collect();
+    cut.push('\u{2026}');
+    cut
 }
 
 fn host_text(host: &crate::model::Host) -> String {
@@ -481,6 +503,8 @@ mod tests {
             hostname: hostname.map(str::to_owned),
             asn,
             replies: 5,
+            best_ms: Some(1.0),
+            mpls: Vec::new(),
         }
     }
 
@@ -593,6 +617,31 @@ mod tests {
         let cell = table.host_cell(Some(&host("1.1.1.1", Some("one.one.one.one"), None)));
         let text: String = cell.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, "one.one.o\u{2026} (1.1.1.1)");
+    }
+
+    #[test]
+    fn lists_the_label_stack_under_its_host_within_the_panel() {
+        let mut summary = summary(Upload::Skipped);
+        summary.routes[0].hops[2].hosts[0].mpls = vec![crate::model::MplsLabel {
+            label: 24001,
+            tc: 0,
+            bottom: true,
+            ttl: 1,
+        }];
+        let (screen, rendered) = draw(&summary, 120);
+        let lines: Vec<&str> = screen.lines().collect();
+        let host = lines
+            .iter()
+            .position(|line| line.contains("one.one.one.one (1.1.1.1)"))
+            .unwrap();
+        assert!(
+            lines[host + 1].contains("[MPLS: Lbl 24001 TC 0 S 1 TTL 1]"),
+            "{screen}"
+        );
+        assert!(lines[host + 2].contains("1.0.0.1"), "{screen}");
+        let (narrow, _) = draw(&summary, 53);
+        assert!(narrow.contains("[MPLS: Lbl 24001"), "{narrow}");
+        assert!(rendered.width <= 120);
     }
 
     #[test]

@@ -111,6 +111,7 @@ pub struct Hop {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Host {
     pub ip: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,6 +119,38 @@ pub struct Host {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asn: Option<u32>,
     pub replies: usize,
+    /// Lowest round trip of the replies from this host. The hop's RTT statistics mix every host
+    /// that answered at this TTL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_ms: Option<f64>,
+    /// MPLS label stack (RFC 4950) of the latest reply from this host that carried one, top entry
+    /// first: the host forwarded the probe inside an MPLS tunnel.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mpls: Vec<MplsLabel>,
+}
+
+/// One entry of an MPLS label stack that a router quoted in its ICMP reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MplsLabel {
+    pub label: u32,
+    /// Traffic class, the former EXP bits.
+    pub tc: u8,
+    /// Bottom of stack.
+    pub bottom: bool,
+    pub ttl: u8,
+}
+
+impl MplsLabel {
+    /// The entry the way `mtr` prints it, such as `[MPLS: Lbl 24001 TC 0 S 1 TTL 1]`.
+    pub fn text(&self) -> String {
+        format!(
+            "[MPLS: Lbl {} TC {} S {} TTL {}]",
+            self.label,
+            self.tc,
+            u8::from(self.bottom),
+            self.ttl
+        )
+    }
 }
 
 /// Successful response of `POST /api/v1/traces`.
@@ -188,6 +221,39 @@ mod tests {
             serde_json::to_value(route(None)).unwrap()["target"],
             "one.one.one.one"
         );
+    }
+
+    #[test]
+    fn serializes_host_round_trips_and_label_stacks_only_when_known() {
+        let mut host = Host {
+            ip: "192.0.2.1".to_owned(),
+            hostname: None,
+            asn: None,
+            replies: 3,
+            best_ms: None,
+            mpls: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&host).unwrap(),
+            serde_json::json!({ "ip": "192.0.2.1", "replies": 3 })
+        );
+        host.best_ms = Some(12.5);
+        host.mpls = vec![MplsLabel {
+            label: 24001,
+            tc: 0,
+            bottom: true,
+            ttl: 1,
+        }];
+        assert_eq!(
+            serde_json::to_value(&host).unwrap(),
+            serde_json::json!({
+                "ip": "192.0.2.1",
+                "replies": 3,
+                "bestMs": 12.5,
+                "mpls": [{ "label": 24001, "tc": 0, "bottom": true, "ttl": 1 }],
+            })
+        );
+        assert_eq!(host.mpls[0].text(), "[MPLS: Lbl 24001 TC 0 S 1 TTL 1]");
     }
 
     #[test]

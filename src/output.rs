@@ -3,7 +3,7 @@ use comfy_table::{CellAlignment, ColumnConstraint, ContentArrangement, Table, Wi
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::model::{Hop, Route};
+use crate::model::{Hop, MplsLabel, Route};
 
 /// The narrowest the Host column gets in a table: an IPv4 address. Below that the hops are listed one
 /// per line instead.
@@ -159,9 +159,12 @@ fn table(route: &Route, width: Option<u16>) -> Table {
         } else {
             hop.hosts
                 .iter()
-                .map(|host| match &host.hostname {
-                    Some(name) => format!("{name} ({})", host.ip),
-                    None => host.ip.clone(),
+                .flat_map(|host| {
+                    let line = match &host.hostname {
+                        Some(name) => format!("{name} ({})", host.ip),
+                        None => host.ip.clone(),
+                    };
+                    std::iter::once(line).chain(host.mpls.iter().map(MplsLabel::text))
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -218,6 +221,8 @@ mod tests {
                     hostname: None,
                     asn: None,
                     replies: 1,
+                    best_ms: avg,
+                    mpls: Vec::new(),
                 })
                 .into_iter()
                 .collect(),
@@ -282,6 +287,39 @@ mod tests {
         let narrow = render_for(&route(), natural - 1);
         assert!(!narrow.contains("StDev"), "{narrow}");
         assert!(widest(&narrow) < natural, "{narrow}");
+    }
+
+    #[test]
+    fn lists_the_label_stack_under_its_host() {
+        let mut route = route();
+        route.hops[2].hosts[0].mpls = vec![
+            MplsLabel {
+                label: 24001,
+                tc: 0,
+                bottom: false,
+                ttl: 1,
+            },
+            MplsLabel {
+                label: 16,
+                tc: 0,
+                bottom: true,
+                ttl: 1,
+            },
+        ];
+        let text = full(&route);
+        let lines: Vec<&str> = text.lines().collect();
+        let host = lines
+            .iter()
+            .position(|line| line.contains("   3   192.0.2.10"))
+            .unwrap();
+        assert!(
+            lines[host + 1].contains("[MPLS: Lbl 24001 TC 0 S 0 TTL 1]"),
+            "{text}"
+        );
+        assert!(
+            lines[host + 2].contains("[MPLS: Lbl 16 TC 0 S 1 TTL 1]"),
+            "{text}"
+        );
     }
 
     #[test]
