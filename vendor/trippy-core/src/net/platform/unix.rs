@@ -395,10 +395,7 @@ mod socket {
             match readable {
                 Ok(readable) => Ok(readable == 1),
                 Err(Error::EINTR) => Ok(false),
-                Err(err) => Err(IoError::Other(
-                    std::io::Error::from(err),
-                    IoOperation::Poll,
-                )),
+                Err(err) => Err(IoError::Other(std::io::Error::from(err), IoOperation::Poll)),
             }
         }
         #[instrument(skip(self), level = "trace")]
@@ -408,10 +405,7 @@ mod socket {
             match writable {
                 Ok(writable) => Ok(writable == 1),
                 Err(Error::EINTR) => Ok(false),
-                Err(err) => Err(IoError::Other(
-                    std::io::Error::from(err),
-                    IoOperation::Poll,
-                )),
+                Err(err) => Err(IoError::Other(std::io::Error::from(err), IoOperation::Poll)),
             }
         }
         #[instrument(skip(self, buf), level = "trace")]

@@ -91,12 +91,17 @@ pub fn startup() -> Result<()> {
 const WINSOCK_VERSION: u16 = 0x202;
 
 /// A network socket.
+///
+/// Windows writes the received data, the source address, its length and the receive flags of an
+/// overlapped `WSARecvFrom` when the receive completes, so every one of them lives on the heap:
+/// the socket is moved after its first receive is posted.
 pub struct SocketImpl {
     inner: socket2::Socket,
     ol: Box<OVERLAPPED>,
     buf: Box<[u8]>,
     from: Box<SOCKADDR_STORAGE>,
-    from_len: i32,
+    from_len: Box<i32>,
+    recv_flags: Box<u32>,
     bytes_read: u32,
 }
 
@@ -115,7 +120,7 @@ impl SocketImpl {
         let inner = socket2::Socket::new(domain, ty, protocol)
             .map_err(|err| IoError::Other(err, IoOperation::NewSocket))?;
         let from = Box::new(Self::new_sockaddr_storage());
-        let from_len = std::mem::size_of::<SOCKADDR_STORAGE>() as i32;
+        let from_len = Box::new(std::mem::size_of::<SOCKADDR_STORAGE>() as i32);
         let ol = Box::new(Self::new_overlapped());
         let buf = Box::new([0; MAX_PACKET_SIZE]);
         Ok(Self {
@@ -124,6 +129,7 @@ impl SocketImpl {
             buf,
             from,
             from_len,
+            recv_flags: Box::new(0),
             bytes_read: 0,
         })
     }
@@ -166,7 +172,7 @@ impl SocketImpl {
                 level,
                 optname,
                 addr_of_mut!(optval).cast(),
-                &mut optlen,
+                addr_of_mut!(optlen),
             ),
             |res| res == SOCKET_ERROR
         )?;
@@ -219,15 +225,16 @@ impl SocketImpl {
             len: MAX_PACKET_SIZE as u32,
             buf: self.buf.as_mut_ptr(),
         };
+        *self.recv_flags = 0;
         syscall!(
             WSARecvFrom(
                 self.inner.as_raw_socket() as usize,
                 addr_of!(wbuf),
                 1,
                 null_mut(),
-                &mut 0,
+                addr_of_mut!(*self.recv_flags),
                 addr_of_mut!(*self.from).cast(),
-                addr_of_mut!(self.from_len),
+                addr_of_mut!(*self.from_len),
                 addr_of_mut!(*self.ol),
                 None,
             ),
@@ -246,9 +253,9 @@ impl SocketImpl {
             WSAGetOverlappedResult(
                 self.inner.as_raw_socket() as _,
                 addr_of!(ol),
-                &mut bytes_read,
+                addr_of_mut!(bytes_read),
                 0,
-                &mut flags,
+                addr_of_mut!(flags),
             ),
             |res| { res == 0 }
         )
@@ -673,7 +680,7 @@ fn sockaddrptr_to_ipaddr(sockaddr: *mut SOCKADDR_STORAGE) -> StdIoResult<IpAddr>
 
 #[allow(unsafe_code)]
 fn sockaddr_to_socketaddr(sockaddr: &SOCKADDR_STORAGE) -> StdIoResult<SocketAddr> {
-    let ptr = sockaddr as *const SOCKADDR_STORAGE;
+    let ptr = std::ptr::from_ref(sockaddr);
     let af = sockaddr.ss_family;
     if af == AF_INET {
         let sockaddr_in_ptr = ptr.cast::<SOCKADDR_IN>();
@@ -774,7 +781,7 @@ mod adapter {
     use std::io::Error as StdIoError;
     use std::marker::PhantomData;
     use std::net::IpAddr;
-    use std::ptr::null_mut;
+    use std::ptr::{addr_of_mut, null_mut};
     use widestring::WideCString;
     use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
     use windows_sys::Win32::NetworkManagement::IpHelper;
@@ -825,7 +832,7 @@ mod adapter {
                     Self::ADDRESS_FLAGS,
                     null_mut(),
                     buf.as_mut_ptr().cast(),
-                    &mut buf_len,
+                    addr_of_mut!(buf_len),
                 ));
                 if res == ERROR_BUFFER_OVERFLOW {
                     continue;

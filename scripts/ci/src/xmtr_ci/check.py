@@ -20,6 +20,7 @@ def rust(*, fmt: bool) -> None:
         cwd=ROOT,
     )
     run("cargo", "test", "--workspace", "--locked", cwd=ROOT)
+    run("cargo", "package", "--workspace", "--exclude", "xmtr-installer", "--locked", cwd=ROOT)
 
 
 def scripts() -> None:
