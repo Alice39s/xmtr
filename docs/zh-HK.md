@@ -60,7 +60,7 @@ powershell -c "irm https://raw.githubusercontent.com/Alice39s/xmtr/main/install.
 安裝器的選項寫在 `bash -s --` 後面：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash -s -- --dir ~/bin --version v0.3.4
+curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash -s -- --dir ~/bin --version v0.3.5
 ```
 
 `XMTR_INSTALL_DIR` 設置安裝目錄，`XMTR_RELEASES` 讓腳本和安裝器都從 releases 頁面的鏡像下載。在 Windows 上只能用這兩個環境變量傳選項。
