@@ -1,15 +1,30 @@
+import json
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from xmtr_ci import alpine, check, github, glitchtip, publish, release, repos, translations
+from xmtr_ci import (
+    alpine,
+    check,
+    github,
+    glitchtip,
+    openwrt,
+    openwrt_publish,
+    openwrt_test,
+    openwrt_vm,
+    publish,
+    release,
+    repos,
+    translations,
+)
 from xmtr_ci import build as builder
 from xmtr_ci import matrix as matrices
 from xmtr_ci import smoke as smoke_test
 from xmtr_ci import verify as channels
 from xmtr_ci.checksums import read_sums
 from xmtr_ci.packages import chocolatey, docker, install, linux, managers, npm, wheels
+from xmtr_ci.packages import openwrt as openwrt_packages
 from xmtr_ci.project import version
 from xmtr_ci.secrets import Secrets
 from xmtr_ci.shell import console
@@ -22,6 +37,7 @@ docker_app = typer.Typer(no_args_is_help=True, help="Build the container image."
 release_app = typer.Typer(no_args_is_help=True, help="Create the GitHub release.")
 publish_app = typer.Typer(no_args_is_help=True, help="Publish a release to package registries.")
 alpine_app = typer.Typer(no_args_is_help=True, help="Write and build the Alpine aport.")
+openwrt_app = typer.Typer(no_args_is_help=True, help="Build and verify native OpenWrt packages.")
 for name, group in {
     "check": check_app,
     "package": package_app,
@@ -29,6 +45,7 @@ for name, group in {
     "release": release_app,
     "publish": publish_app,
     "alpine": alpine_app,
+    "openwrt": openwrt_app,
 }.items():
     app.add_typer(group, name=name)
 
@@ -83,6 +100,89 @@ def check_scripts() -> None:
 @app.command("docs", help="Write the Traditional Chinese READMEs from docs/zh-CN.md with OpenCC.")
 def write_docs() -> None:
     listing(translations.write())
+
+
+@openwrt_app.command("profiles", help="Print the pinned OpenWrt architecture profiles.")
+def openwrt_profiles() -> None:
+    print(json.dumps(openwrt.profiles(), indent=2))
+
+
+@openwrt_app.command("rootfs", help="Download and verify the pinned root filesystem.")
+def openwrt_rootfs(
+    profile: openwrt.Profile,
+    out: Path = Path("target/xmtr-ci/openwrt/downloads"),
+) -> None:
+    listing([openwrt.rootfs(openwrt.profile(profile), out)])
+
+
+@openwrt_app.command("build", help="Package one release binary with the pinned OpenWrt SDK.")
+def openwrt_build(
+    profile: openwrt.Profile,
+    version: Version,
+    archives: Archives = Path("dist"),
+    out: Path = Path("packages/openwrt"),
+) -> None:
+    listing([openwrt_packages.build(profile, version, archives, out)])
+
+
+@openwrt_app.command("sign", help="Sign native OpenWrt packages and their repository index.")
+def openwrt_sign(
+    profile: openwrt.Profile,
+    version: Version,
+    private: Annotated[Path, typer.Option(help="Signing key file")],
+    public: Annotated[Path, typer.Option(help="Matching public key file")],
+    packages: Path = Path("packages/openwrt"),
+) -> None:
+    listing([openwrt_packages.sign(profile, version, packages, private, public)])
+
+
+@openwrt_app.command("keygen", help="Create a repository signing key pair with the pinned SDK.")
+def openwrt_keygen(
+    profile: openwrt.Profile,
+    out: Annotated[Path, typer.Option(help="Directory for the new signing key pair")],
+) -> None:
+    _, public = openwrt_packages.keys(profile, out)
+    listing([public])
+
+
+@openwrt_app.command("test", help="Install a signed package in the matching OpenWrt userland.")
+def openwrt_test_profile(
+    profile: openwrt.Profile,
+    version: Version,
+    archives: Archives = Path("dist"),
+    out: Path = Path("target/openwrt-test"),
+) -> None:
+    listing([openwrt_test.test_profile(profile, version, archives, out)])
+
+
+@openwrt_app.command("vm", help="Boot an OpenWrt kernel and test the signed package.")
+def openwrt_vm_profile(
+    profile: openwrt.Profile,
+    version: Version,
+    archives: Archives = Path("dist"),
+    out: Path = Path("target/openwrt-vm"),
+) -> None:
+    listing([openwrt_vm.test_profile(profile, version, archives, out)])
+
+
+@openwrt_app.command("release", help="Sign every tested OpenWrt package and write release assets.")
+def openwrt_release(
+    version: Version,
+    packages: Path = Path("packages/openwrt"),
+    out: Path = Path("packages/openwrt-signed"),
+    dist: Path = Path("dist"),
+) -> None:
+    listing(openwrt_publish.build(version, packages, out, Secrets()))
+    listing(openwrt_publish.assets(version, out, dist))
+
+
+@openwrt_app.command("check-feed", help="Exercise release signing with temporary test keys.")
+def openwrt_check_feed(
+    version: Version,
+    packages: Path = Path("packages/openwrt"),
+    out: Path = Path("target/openwrt-feed-test"),
+) -> None:
+    listing([openwrt_publish.check(version, packages, out)])
 
 
 @check_app.command("release", help="Validate the knope versions and the release tag.")
@@ -157,9 +257,13 @@ def docker_test(context: Path = Path("docker"), archives: Archives = Path("dist"
     docker.test(context, docker.context(archives, context))
 
 
-@app.command(help="Build the signed apt, dnf and apk repositories.")
-def repositories(packages: Packages = Path("packages"), site: Path = Path("site")) -> None:
-    listing(repos.build(packages, site, Secrets()))
+@app.command(help="Build the signed apt, dnf, Alpine and OpenWrt repositories.")
+def repositories(
+    packages: Packages = Path("packages"),
+    site: Path = Path("site"),
+    openwrt_feed: Path = Path("packages/openwrt-signed"),
+) -> None:
+    listing(repos.build(packages, site, Secrets(), openwrt_feed=openwrt_feed))
 
 
 @release_app.command("prepare", help="Write SHA256SUMS and the release notes.")

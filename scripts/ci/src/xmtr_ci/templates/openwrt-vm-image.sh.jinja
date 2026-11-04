@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+archive=$1
+rootfs=$2
+disk=$3
+mkdir "$rootfs"
+tar --extract --gzip --same-owner --file "$archive" --directory "$rootfs"
+truncate --size 128M "$disk"
+mke2fs -q -t ext4 -F -L rootfs -d "$rootfs" "$disk"

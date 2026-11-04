@@ -1,0 +1,36 @@
+[rust]
+snapshot = "2026-07-30"
+host = "x86_64-unknown-linux-gnu"
+rustc_sha256 = "3746823df161e3446db845460c93969fef6981bf02a99462f3dbcef8d7a9f91a"
+cargo_sha256 = "feec34ec7ac8b0d7fbad31dd0d419f5c07a7098703e27228c76b5ed63de5b395"
+host_std_sha256 = "13678f48adf99a95acdaf340ec2f844ceb9476d5e649c0771648a164a84b4d46"
+rust_src_sha256 = "f0234f84888cdfd10529f2da42ae1c5afb37cd93d8935b398219bb38d378409b"
+llvm_commit = "52ed14fcd56afc30f9cccd8ca8ce237c2eef7e04"
+
+[mips-unknown-linux-musl]
+release = "24.10.4"
+target = "malta/be"
+archive = "openwrt-toolchain-24.10.4-malta-be_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+sha256 = "d40eb2a77cf41cdfb55ed032d095a0639366048a578cf6288972afbcf6a00f25"
+directory = "toolchain-mips_24kc_gcc-13.3.0_musl"
+prefix = "mips-openwrt-linux-musl"
+cflags = "-mips32r2 -msoft-float"
+
+[armv7-unknown-linux-musleabi]
+release = "24.10.4"
+target = "mediatek/mt7629"
+archive = "openwrt-toolchain-24.10.4-mediatek-mt7629_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+sha256 = "71dadaf9f7544c806858df357e3425622cac74e6dd87baecafcc52fd593e4dd4"
+directory = "toolchain-arm_cortex-a7_gcc-13.3.0_musl_eabi"
+prefix = "arm-openwrt-linux-muslgnueabi"
+cflags = "-march=armv7-a -mfloat-abi=soft"
+rust_std_sha256 = "d75c2cf9a5829cf46295d1480a1f3580f422d9fc6388d7c175ba9b37ae971b1b"
+
+[mipsel-unknown-linux-musl]
+release = "24.10.4"
+target = "malta/le"
+archive = "openwrt-toolchain-24.10.4-malta-le_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+sha256 = "cd2dff3e97a9b991374f978ae5687927d77bc0e1f5c5749c300b76ea6b209df0"
+directory = "toolchain-mipsel_24kc_gcc-13.3.0_musl"
+prefix = "mipsel-openwrt-linux-musl"
+cflags = "-mips32r2 -msoft-float"

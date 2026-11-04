@@ -11,6 +11,7 @@ class Builder(StrEnum):
     ZIGBUILD = "zigbuild"
     CROSS = "cross"
     NDK = "ndk"
+    OPENWRT = "openwrt"
 
 
 class Model(BaseModel):
@@ -20,6 +21,7 @@ class Model(BaseModel):
 class HostedSmoke(Model):
     os: str
     qemu: str | None = None
+    cpu: str | None = None
     libs: str | None = None
     sysroot: str | None = None
 

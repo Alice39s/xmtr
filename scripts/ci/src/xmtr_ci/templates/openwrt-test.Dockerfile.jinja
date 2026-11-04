@@ -1,0 +1,4 @@
+FROM scratch
+ADD rootfs.tar.gz /
+ADD container.tar /
+LABEL dev.xmtr.openwrt-test={{ owner | tojson }}

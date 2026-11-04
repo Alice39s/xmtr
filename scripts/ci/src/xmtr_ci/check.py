@@ -24,7 +24,11 @@ def rust(*, fmt: bool) -> None:
 
 
 def scripts() -> None:
-    run("shellcheck", "install.sh", "packaging/linux/postinstall.sh", cwd=ROOT)
+    run(
+        "shellcheck", "install.sh", "packaging/linux/postinstall.sh",
+        *sorted((ROOT / "packaging" / "openwrt").glob("*.sh")),
+        cwd=ROOT,
+    )  # fmt: skip
     run("node", "--check", "packaging/npm/xmtr.js", cwd=ROOT)
     run("ruff", "check", cwd=CI)
     run("ruff", "format", "--check", cwd=CI)

@@ -41,7 +41,7 @@ sudo xmtr 1.1.1.1 cloudflare.com
 curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash
 ```
 
-指令碼只用 POSIX `sh` 語法，沒有 bash 的系統（例如 OpenWrt）可以改用 `| sh`。普通使用者執行時，指令碼通過 `sudo` 安裝到 `/usr/local/bin`，這樣 `sudo xmtr` 能找到它；sudo 可能會要求輸入密碼。不能使用 sudo 時安裝到 `~/.local/bin`。
+指令碼只用 POSIX `sh` 語法，沒有 bash 的系統可以改用 `| sh`。OpenWrt 請用[原生軟體源](openwrt.md)安裝。普通使用者執行時，指令碼通過 `sudo` 安裝到 `/usr/local/bin`，這樣 `sudo xmtr` 能找到它；sudo 可能會要求輸入密碼。不能使用 sudo 時安裝到 `~/.local/bin`。
 
 **Windows**
 
@@ -109,6 +109,10 @@ apk add xmtr
 ```
 
 軟體源的簽名金鑰在 [`packaging/keys`](../packaging/keys)。上面所有渠道都由釋出流水線推送，mise 和 Nix 除外，它們直接讀取 GitHub release 和 flake。
+
+### OpenWrt
+
+原生包覆蓋 OpenWrt 24.10 的 `opkg` 和 25.12 的 APK v3，提供 x86-64、帶 SSE2 的 x86、ARM64、ARMv7 硬浮點與軟浮點，以及大端、小端 MIPS 24Kc 版本。[OpenWrt 指南](openwrt.md)列出具體的包架構、簽名軟體源配置和更新命令。OpenWrt 上以 root 執行 xmtr。
 
 ### 更新與解除安裝
 

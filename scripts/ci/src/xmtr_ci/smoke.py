@@ -17,10 +17,10 @@ def runner(target: Target, stage: Path) -> list[str]:
     match target.smoke:
         case HostedSmoke(qemu=None):
             return []
-        case HostedSmoke(qemu=qemu, sysroot=None):
-            return [f"qemu-{qemu}"]
-        case HostedSmoke(qemu=qemu, sysroot=sysroot):
-            return [f"qemu-{qemu}", "-L", str(sysroot)]
+        case HostedSmoke(qemu=qemu, sysroot=None, cpu=cpu):
+            return [f"qemu-{qemu}", *(["-cpu", cpu] if cpu else [])]
+        case HostedSmoke(qemu=qemu, sysroot=sysroot, cpu=cpu):
+            return [f"qemu-{qemu}", *(["-cpu", cpu] if cpu else []), "-L", str(sysroot)]
         case TermuxSmoke(termux=image):
             return [
                 "docker", "run", "--rm", "--privileged", "--volume", f"{stage}:{stage}",

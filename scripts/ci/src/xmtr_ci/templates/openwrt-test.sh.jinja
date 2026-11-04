@@ -1,0 +1,105 @@
+#!/bin/sh
+set -eu
+
+mkdir -p "$TMPDIR" /work/lists /work/cache /work/default-feeds
+uname -sr > /evidence/kernel.txt
+
+manager() {
+	case "$XMTR_FORMAT" in
+	ipk) opkg -f /work/opkg.conf --tmp-dir "$TMPDIR" "$@" ;;
+	apk) apk --repositories-file /work/repositories --cache-dir /work/cache "$@" ;;
+	esac
+}
+
+case "$XMTR_FORMAT" in
+ipk)
+	for source in /etc/opkg/*.conf; do
+		[ ! -f "$source" ] || mv "$source" /work/default-feeds/
+	done
+	printf '%s\n' 'dest root /' 'lists_dir ext /work/lists' \
+		'option check_signature' 'src/gz xmtr http://feed:8000' > /work/opkg.conf
+	opkg print-architecture > /evidence/package-architectures.txt
+	;;
+apk)
+	printf '%s\n' 'http://feed:8000/packages.adb' > /work/repositories
+	apk --print-arch > /evidence/package-architectures.txt
+	;;
+*) exit 1 ;;
+esac
+
+if manager update > /evidence/untrusted-update.log 2>&1; then
+	printf '0\n' > /evidence/untrusted-update-status.txt
+else
+	printf '%s\n' "$?" > /evidence/untrusted-update-status.txt
+fi
+case "$XMTR_FORMAT" in
+ipk)
+	grep -Fq 'Signature check failed' /evidence/untrusted-update.log
+	test ! -s /work/lists/xmtr
+	manager list xmtr > /evidence/untrusted-candidates.txt
+	if manager install xmtr > /evidence/untrusted-install.log 2>&1; then
+		exit 1
+	fi
+	grep -Fq 'Unknown package' /evidence/untrusted-install.log
+	;;
+apk)
+	grep -Fq 'UNTRUSTED signature' /evidence/untrusted-update.log
+	if manager search -x xmtr > /evidence/untrusted-candidates.txt 2> /evidence/untrusted-search.log; then
+		:
+	fi
+	if manager add xmtr > /evidence/untrusted-install.log 2>&1; then
+		exit 1
+	fi
+	grep -Fiq 'no such package' /evidence/untrusted-install.log
+	;;
+esac
+test ! -s /evidence/untrusted-candidates.txt
+test ! -e /usr/bin/xmtr
+
+uclient-fetch -q -O /work/publickey http://feed:8000/publickey
+case "$XMTR_FORMAT" in
+ipk)
+	opkg-key add /work/publickey
+	manager update > /evidence/trusted-update.log 2>&1
+	grep -Fq 'Signature check passed' /evidence/trusted-update.log
+	manager install xmtr > /evidence/install.log 2>&1
+	;;
+apk)
+	cp /work/publickey /etc/apk/keys/xmtr-test.pem
+	manager update > /evidence/trusted-update.log 2>&1
+	manager add xmtr > /evidence/install.log 2>&1
+	;;
+esac
+
+/usr/bin/xmtr --version > /evidence/version.txt
+test "$(cat /evidence/version.txt)" = "xmtr $XMTR_VERSION"
+sha256sum -c /fixture/expected.sha256 > /evidence/installed-checksums.log
+for protocol in icmp udp tcp; do
+	for family in 4 6; do
+		case "$family" in
+		4) destination=127.0.0.1 ;;
+		6) destination=::1 ;;
+		esac
+		/usr/bin/xmtr --json --no-upload --no-rdns --hide-origin \
+			--progress plain --theme dark-ansi --min-rounds 3 --max-rounds 3 \
+			--interval 100ms --time-limit 10s --max-ttl 4 --parallel 1 \
+			--protocol "$protocol" "-$family" "$destination" \
+			> "/evidence/$protocol-ipv$family.json" \
+			2> "/evidence/$protocol-ipv$family.stderr.txt"
+	done
+done
+
+case "$XMTR_FORMAT" in
+ipk)
+	manager remove xmtr > /evidence/uninstall.log 2>&1
+	test ! -e /usr/bin/xmtr
+	manager install xmtr > /evidence/reinstall.log 2>&1
+	;;
+apk)
+	manager del xmtr > /evidence/uninstall.log 2>&1
+	test ! -e /usr/bin/xmtr
+	manager add xmtr > /evidence/reinstall.log 2>&1
+	;;
+esac
+sha256sum -c /fixture/expected.sha256 > /evidence/reinstalled-checksums.log
+test "$(/usr/bin/xmtr --version)" = "xmtr $XMTR_VERSION"

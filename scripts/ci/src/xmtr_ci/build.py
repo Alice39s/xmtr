@@ -2,7 +2,7 @@ import os
 import shutil
 from pathlib import Path
 
-from xmtr_ci import archive
+from xmtr_ci import archive, openwrt_build
 from xmtr_ci.project import LICENSES, ROOT
 from xmtr_ci.shell import run
 from xmtr_ci.targets import Builder, Target
@@ -21,6 +21,8 @@ def compile_release(target: Target) -> None:
                 cwd=ROOT,
                 env={"ANDROID_NDK_HOME": os.environ["ANDROID_NDK_LATEST_HOME"]},
             )  # fmt: skip
+        case Builder.OPENWRT:
+            openwrt_build.compile_release(target)
 
 
 def pack_release(target: Target, dist: Path) -> list[Path]:
