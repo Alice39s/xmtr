@@ -187,7 +187,9 @@ jobs:
         with:
           name: xmtr-${{ matrix.target }}
           path: dist
-      - uses: docker/setup-qemu-action@v4
+      - uses: ./.github/actions/openwrt-qemu
+        with:
+          target: ${{ matrix.target }}
       - run: sudo apt-get update && sudo apt-get install --yes squashfs-tools-ng
       - uses: ./.github/actions/xmtr-ci
       - run: uv run xmtr-ci openwrt test ${{ matrix.profile }}

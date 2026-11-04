@@ -1,0 +1,24 @@
+name: OpenWrt user emulation
+description: Register the CPU interpreters used by native OpenWrt package tests
+inputs:
+  target:
+    description: Rust target of the package under test
+    required: true
+runs:
+  using: composite
+  steps:
+    - if: startsWith(inputs.target, 'mips')
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes qemu-user-static
+        if ! test -e /proc/sys/fs/binfmt_misc/register; then
+          sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+        fi
+        sudo /usr/lib/systemd/systemd-binfmt \
+          /usr/lib/binfmt.d/qemu-mips.conf \
+          /usr/lib/binfmt.d/qemu-mipsel.conf
+        cat /proc/sys/fs/binfmt_misc/qemu-mips
+        cat /proc/sys/fs/binfmt_misc/qemu-mipsel
+    - if: ${{ !startsWith(inputs.target, 'mips') }}
+      uses: docker/setup-qemu-action@v4
