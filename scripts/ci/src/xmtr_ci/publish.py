@@ -11,7 +11,7 @@ from xmtr_ci.packages import managers
 from xmtr_ci.project import AUTHOR, EMAIL, ROOT, download_url, prerelease
 from xmtr_ci.shell import attempt, output, run
 
-CRATES = ("xmtr-release", "xmtr")
+CRATES = ("xmtr-trippy-core", "xmtr-release", "xmtr")
 
 
 def crates(version: str) -> None:

@@ -1,6 +1,5 @@
 [workspace]
-members = [".", "crates/release", "crates/installer"]
-exclude = ["vendor/trippy-core"]
+members = [".", "crates/release", "crates/installer", "vendor/trippy-core"]
 resolver = "3"
 
 [workspace.package]
@@ -17,6 +16,7 @@ anyhow = "1"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "gzip"] }
 # The version must match workspace.package.version; the release workflow checks it.
 xmtr-release = { path = "crates/release", version = "0.3.4" }
+trippy-core = { package = "xmtr-trippy-core", path = "vendor/trippy-core", version = "0.3.4" }
 
 [package]
 name = "xmtr"
@@ -71,7 +71,7 @@ terminal-colorsaurus = "1"
 textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }
 tokio = { version = "1", features = ["rt", "time", "net"] }
 unicode-width = "0.2"
-trippy-core = "0.13"
+trippy-core.workspace = true
 trippy-privilege = "0.13"
 ureq = { workspace = true, features = ["json"] }
 xmtr-release.workspace = true
@@ -94,8 +94,3 @@ panic = "abort"
 
 [profile.release.package.xmtr-installer]
 opt-level = "z"
-
-# trippy-core 0.13.0 with Android handled like Linux when it picks the IPv4 header byte order;
-# see vendor/README.md.
-[patch.crates-io]
-trippy-core = { path = "vendor/trippy-core" }

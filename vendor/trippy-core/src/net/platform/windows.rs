@@ -172,7 +172,7 @@ impl SocketImpl {
                 level,
                 optname,
                 addr_of_mut!(optval).cast(),
-                &mut optlen,
+                addr_of_mut!(optlen),
             ),
             |res| res == SOCKET_ERROR
         )?;
@@ -253,9 +253,9 @@ impl SocketImpl {
             WSAGetOverlappedResult(
                 self.inner.as_raw_socket() as _,
                 addr_of!(ol),
-                &mut bytes_read,
+                addr_of_mut!(bytes_read),
                 0,
-                &mut flags,
+                addr_of_mut!(flags),
             ),
             |res| { res == 0 }
         )
@@ -680,7 +680,7 @@ fn sockaddrptr_to_ipaddr(sockaddr: *mut SOCKADDR_STORAGE) -> StdIoResult<IpAddr>
 
 #[allow(unsafe_code)]
 fn sockaddr_to_socketaddr(sockaddr: &SOCKADDR_STORAGE) -> StdIoResult<SocketAddr> {
-    let ptr = sockaddr as *const SOCKADDR_STORAGE;
+    let ptr = std::ptr::from_ref(sockaddr);
     let af = sockaddr.ss_family;
     if af == AF_INET {
         let sockaddr_in_ptr = ptr.cast::<SOCKADDR_IN>();
@@ -781,7 +781,7 @@ mod adapter {
     use std::io::Error as StdIoError;
     use std::marker::PhantomData;
     use std::net::IpAddr;
-    use std::ptr::null_mut;
+    use std::ptr::{addr_of_mut, null_mut};
     use widestring::WideCString;
     use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
     use windows_sys::Win32::NetworkManagement::IpHelper;
@@ -832,7 +832,7 @@ mod adapter {
                     Self::ADDRESS_FLAGS,
                     null_mut(),
                     buf.as_mut_ptr().cast(),
-                    &mut buf_len,
+                    addr_of_mut!(buf_len),
                 ));
                 if res == ERROR_BUFFER_OVERFLOW {
                     continue;

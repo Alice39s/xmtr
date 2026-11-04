@@ -16,10 +16,12 @@ versioned_files = [
   { path = "Cargo.toml", regex = [
     '(?m)^version = "(?<version>\d+\.\d+\.\d+)"$',
     'xmtr-release = \{ path = "crates/release", version = "(?<version>\d+\.\d+\.\d+)" \}',
+    'trippy-core = \{ package = "xmtr-trippy-core", path = "vendor/trippy-core", version = "(?<version>\d+\.\d+\.\d+)" \}',
   ] },
   { path = "Cargo.lock", dependency = "xmtr" },
   { path = "Cargo.lock", dependency = "xmtr-release" },
   { path = "Cargo.lock", dependency = "xmtr-installer" },
+  { path = "Cargo.lock", dependency = "xmtr-trippy-core" },
   { path = "README.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
   { path = "docs/zh-CN.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
   { path = "docs/zh-TW.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },

@@ -27,4 +27,19 @@ Check the project before you commit:
 
 ```sh
 uv run --project scripts/ci xmtr-ci check scripts
+uv run --project scripts/ci xmtr-ci check rust
 ```
+
+Use stable Cargo for `check rust`. Its final step runs `cargo package --workspace --exclude xmtr-installer --locked` to build the crates that will be published and verify their packaged dependencies. xmtr still supports Rust 1.88, which the separate MSRV jobs check.
+
+## Cargo publishing
+
+`publish crates` publishes `xmtr-trippy-core`, `xmtr-release` and `xmtr`, in that order. All three use the workspace version, and Cargo waits for each uploaded package to appear in the registry before continuing.
+
+Before the first release containing `xmtr-trippy-core`, publish that package with a crates.io API token:
+
+```sh
+cargo publish --locked --package xmtr-trippy-core
+```
+
+Then configure its crates.io Trusted Publishing settings for the `Alice39s/xmtr` repository and the `release.yml` workflow. Initial publication requires an API token; later releases use the workflow's OIDC credentials. See the [crates.io Trusted Publishing documentation](https://crates.io/docs/trusted-publishing).
