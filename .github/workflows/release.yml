@@ -27,6 +27,7 @@ jobs:
       android: ${{ steps.matrix.outputs.android }}
       openwrt: ${{ steps.matrix.outputs.openwrt }}
       openwrt_vm: ${{ steps.matrix.outputs.openwrt_vm }}
+      openwrt_community: ${{ steps.matrix.outputs.openwrt_community }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -206,6 +207,34 @@ jobs:
             target/openwrt-test/${{ matrix.profile }}.json
             target/openwrt-test/${{ matrix.profile }}/
 
+  openwrt-community:
+    name: Community firmware ${{ matrix.profile }}
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.check.outputs.openwrt_community) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: xmtr-${{ matrix.target }}
+          path: dist
+      - uses: ./.github/actions/openwrt-qemu
+        with:
+          target: ${{ matrix.target }}
+      - run: sudo apt-get update && sudo apt-get install --yes squashfs-tools-ng
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci openwrt test ${{ matrix.profile }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: community-report-${{ matrix.profile }}
+          path: |
+            target/openwrt-test/${{ matrix.profile }}.json
+            target/openwrt-test/${{ matrix.profile }}/
+
   openwrt-feed:
     needs: openwrt
     runs-on: ubuntu-24.04
@@ -225,7 +254,7 @@ jobs:
           path: target/openwrt-feed-test/report.json
 
   openwrt-vm:
-    name: OpenWrt kernel ${{ matrix.profile }}
+    name: Firmware kernel ${{ matrix.profile }}
     needs: [check, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -238,7 +267,7 @@ jobs:
         with:
           name: xmtr-${{ matrix.target }}
           path: dist
-      - run: sudo apt-get update && sudo apt-get install --yes qemu-system-x86 qemu-system-arm e2fsprogs fakeroot
+      - run: sudo apt-get update && sudo apt-get install --yes qemu-system-x86 qemu-system-arm e2fsprogs fakeroot ovmf cmake
       - uses: ./.github/actions/xmtr-ci
       - run: uv run xmtr-ci openwrt vm ${{ matrix.profile }}
       - if: always()
@@ -329,7 +358,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [msrv, test, nix, build, smoke, smoke-freebsd, smoke-android, openwrt-feed, openwrt-vm, packages, chocolatey, docker, alpine]
+    needs: [msrv, test, nix, build, smoke, smoke-freebsd, smoke-android, openwrt-feed, openwrt-community, openwrt-vm, packages, chocolatey, docker, alpine]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -13,7 +13,8 @@ from pathlib import Path
 from pydantic import JsonValue, TypeAdapter
 
 from xmtr_ci import archive
-from xmtr_ci.openwrt import profile, rootfs
+from xmtr_ci.openwrt import rootfs
+from xmtr_ci.openwrt import test_profile as profile
 from xmtr_ci.packages import openwrt as packages
 from xmtr_ci.project import LICENSES
 from xmtr_ci.shell import output, run
@@ -154,6 +155,7 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
     if platform.system() != "Linux":
         raise RuntimeError("OpenWrt container tests must run on a Linux Docker host")
     case = profile(name)
+    package_profile = case.get("package_profile", name)
     registration = Path(f"/proc/sys/fs/binfmt_misc/qemu-{case['qemu']}")
     emulator = registration.read_text() if registration.is_file() else None
     out = out.resolve()
@@ -161,7 +163,7 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
     evidence = out / name
     evidence.mkdir()
     evidence.chmod(0o770)
-    package = packages.build(name, version, archives.resolve(), out / "packages")
+    package = packages.build(package_profile, version, archives.resolve(), out / "packages")
     unsigned_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
     report = out / f"{name}.json"
     with tempfile.TemporaryDirectory(prefix=".openwrt-test-", dir=out.parent) as work:
@@ -171,8 +173,8 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
         feed = packages.directory(case, stage / "signed")
         feed.mkdir(parents=True)
         shutil.copyfile(package, feed / package.name)
-        private, public = packages.keys(name, stage / "keys")
-        packages.sign(name, version, stage / "signed", private, public)
+        private, public = packages.keys(package_profile, stage / "keys")
+        packages.sign(package_profile, version, stage / "signed", private, public)
         shutil.copyfile(public, feed / "publickey")
         fixture, build, expected = fixtures(case, archives, stage, project)
         image = f"xmtr-openwrt-test:{project}"
@@ -232,7 +234,7 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
                         ).hexdigest(),
                         "version": actual_version,
                         "runtime": {
-                            "kind": "OpenWrt userland container",
+                            "kind": f"{case['distribution']} userland container",
                             "kernel": (evidence / "kernel.txt").read_text().strip(),
                             "firmware": (evidence / "release.txt").read_text().strip(),
                             "shares_host_kernel": True,

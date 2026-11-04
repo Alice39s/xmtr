@@ -15,6 +15,7 @@ import tomllib
 import uuid
 from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
+from enum import StrEnum
 from importlib.resources import files
 from pathlib import Path
 from types import FrameType
@@ -25,7 +26,7 @@ import pexpect
 import psutil
 from pydantic import JsonValue, TypeAdapter
 
-from xmtr_ci import archive, web
+from xmtr_ci import archive, openwrt_firmware, web
 from xmtr_ci.openwrt import profile, validate_binary
 from xmtr_ci.openwrt_test import trace
 from xmtr_ci.packages import openwrt as packages
@@ -42,8 +43,15 @@ GUEST = "/root/xmtr-vm"
 
 
 def profiles() -> dict[str, dict[str, str]]:
-    table = tomllib.loads(files(__package__).joinpath("openwrt-vms.toml").read_text())
-    return TypeAdapter(dict[str, dict[str, str]]).validate_python(table["vm"])
+    result: dict[str, dict[str, str]] = {}
+    for name in ("openwrt-vms.toml", "lean-vms.toml", "immortalwrt-vms.toml"):
+        source = files(__package__).joinpath(name)
+        table = tomllib.loads(source.read_text())
+        entries = TypeAdapter(dict[str, dict[str, str]]).validate_python(table["vm"])
+        if duplicate := result.keys() & entries.keys():
+            raise ValueError(f"{source.name}: duplicate VM profiles: {sorted(duplicate)}")
+        result.update({name: entry | {"id": name} for name, entry in entries.items()})
+    return result
 
 
 def write_json(path: Path, value: object) -> None:
@@ -123,6 +131,53 @@ def disk_image(vm: dict[str, str], stage: Path) -> tuple[Path, Path]:
         env=os.environ | {"TMPDIR": str(stage / "tmp")},
     )
     return disk, kernel
+
+
+def boot_media(vm: dict[str, str], stage: Path, evidence: Path) -> list[str]:
+    kind = vm["source_kind"]
+    if kind == "kernel-rootfs":
+        disk, kernel = disk_image(vm, stage)
+        return [
+            "-kernel",
+            str(kernel),
+            "-append",
+            f"root=/dev/vda rootfstype=ext4 rootwait console={vm['console']}",
+            "-drive",
+            f"file={disk},format=raw,if=none,id=rootfs",
+            "-device",
+            f"virtio-blk-{vm['virtio']},drive=rootfs",
+        ]
+    if kind == "initramfs":
+        kernel = image(vm["source_url"], vm["source_sha256"], stage / "kernel.bin")
+        return ["-kernel", str(kernel), "-append", f"console={vm['console']}"]
+    disk = openwrt_firmware.disk(vm, stage)
+    args = [
+        "-drive",
+        f"file={disk},format=raw,if=none,id=rootfs",
+        "-device",
+        f"virtio-blk-{vm['virtio']},drive=rootfs,bootindex=1",
+        "-boot",
+        "order=c,strict=on",
+    ]
+    if kind.startswith("efi-"):
+        code = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
+        template = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
+        variables = stage / "ovmf-vars.fd"
+        shutil.copyfile(template, variables)
+        firmware = {"code": str(code), "variables_template": str(template)}
+        for name, path in (("code", code), ("variables_template", template)):
+            with path.open("rb") as stream:
+                firmware[f"{name}_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+        write_json(evidence / "uefi-firmware.json", firmware)
+        args.extend(
+            (
+                "-drive",
+                f"if=pflash,format=raw,readonly=on,file={code}",
+                "-drive",
+                f"if=pflash,format=raw,file={variables}",
+            )
+        )
+    return args
 
 
 def process_owner(pid: int, args: list[str], owner: str, record: Path) -> None:
@@ -210,7 +265,7 @@ def serve(feed: Path, evidence: Path, owner: str, stack: ExitStack) -> str:
 
 
 def boot(
-    case: dict[str, str],
+    vm: dict[str, str],
     stage: Path,
     evidence: Path,
     owner: str,
@@ -218,10 +273,12 @@ def boot(
 ) -> pexpect.spawn:
     import tty  # noqa: PLC0415 - tty is available only on the Linux VM execution path.
 
-    vm = profiles()[case["id"]]
-    disk, kernel = disk_image(vm, stage)
-    binary = program(f"qemu-system-{case['qemu']}")
+    media = boot_media(vm, stage, evidence)
+    binary = program(f"qemu-system-{vm['qemu']}")
     suffix = vm["virtio"]
+    memory = vm["memory_mib"]
+    if memory not in {"256", "512"}:
+        raise ValueError(f"{vm['id']}: VM memory must be 256 or 512 MiB")
     args = [
         binary,
         "-name",
@@ -234,15 +291,8 @@ def boot(
         "-smp",
         "1",
         "-m",
-        "256",
-        "-kernel",
-        str(kernel),
-        "-append",
-        f"root=/dev/vda rootfstype=ext4 rootwait console={vm['console']}",
-        "-drive",
-        f"file={disk},format=raw,if=none,id=rootfs",
-        "-device",
-        f"virtio-blk-{suffix},drive=rootfs",
+        memory,
+        *media,
         "-netdev",
         "user,id=net0",
         "-device",
@@ -268,9 +318,7 @@ def boot(
     record = evidence / "qemu-owner.json"
     process_owner(child.pid, args, owner, record)
     stack.callback(stop_vm, child, record, owner)
-    child.expect_exact("Please press Enter to activate this console.", timeout=BOOT_SECONDS)
-    child.sendline("")
-    child.expect(r"root@[^:\r\n]+:[^\r\n]*# ")
+    login(child, vm)
     child.sendline("stty -echo")
     child.expect(r"root@[^:\r\n]+:[^\r\n]*# ")
     child.sendline(f"export PS1={shlex.quote(PROMPT)}")
@@ -278,12 +326,46 @@ def boot(
     return child
 
 
-def command(child: pexpect.spawn, script: str, *, timeout: int = STEP_SECONDS) -> str:
-    begin, end = (f"__XMTR_{uuid.uuid4().hex}__" for _ in range(2))
-    child.sendline(
+def login(child: pexpect.spawn, vm: dict[str, str]) -> None:
+    prompt = r"root@[^:\r\n]+:[^\r\n]*# "
+    state = child.expect(
+        [
+            prompt,
+            r"Please press Enter to activate this console\.",
+            r"login: ?$",
+        ],
+        timeout=BOOT_SECONDS,
+    )
+    if state == 1:
+        child.sendline("")
+        state = child.expect([prompt, r"login: ?$"], timeout=BOOT_SECONDS)
+        if state == 0:
+            return
+    elif state == 0:
+        return
+    if vm["console_login"] != "password":
+        raise RuntimeError(f"{vm['id']}: firmware requested an undocumented console login")
+    child.sendline(vm["console_user"])
+    child.expect_exact("Password:", timeout=30)
+    log = child.logfile
+    child.logfile = None
+    child.sendline(vm["console_password"])
+    child.logfile = log
+    state = child.expect([prompt, "Login incorrect", r"login: ?$"], timeout=30)
+    if state != 0:
+        raise RuntimeError(f"{vm['id']}: documented console credentials were rejected")
+
+
+def serial_frame(script: str, begin: str, end: str) -> str:
+    return (
         f"printf '\\n{begin}\\n'; sh -eu -c {shlex.quote(script)}; status=$?; "
         f"printf '\\n{end}%s\\n' \"$status\""
     )
+
+
+def command(child: pexpect.spawn, script: str, *, timeout: int = STEP_SECONDS) -> str:
+    begin, end = (f"__XMTR_{uuid.uuid4().hex}__" for _ in range(2))
+    child.sendline(serial_frame(script, begin, end))
     child.expect(begin + r"\r*\n", timeout=timeout)
     child.expect(end + r"([0-9]+)\r*\n", timeout=timeout)
     if not isinstance(child.before, str) or child.match is None:
@@ -293,6 +375,17 @@ def command(child: pexpect.spawn, script: str, *, timeout: int = STEP_SECONDS) -
     child.expect_exact(PROMPT, timeout=timeout)
     if status:
         raise RuntimeError(f"Guest command returned {status}: {script}\n{result}")
+    return result
+
+
+def prepare_vm(vm: dict[str, str]) -> dict[str, str]:
+    result = vm.copy()
+    for key in ("luci_packages", "web_packages", "remove_packages", "web_executables"):
+        if key in result:
+            result[key] = shlex.join(shlex.split(result[key]))
+    result["luci_packages_lines"] = " \\\n".join(
+        shlex.quote(item) for item in shlex.split(result.get("luci_packages", ""))
+    )
     return result
 
 
@@ -331,17 +424,25 @@ def exercise(
     feed_url: str,
     evidence: Path,
 ) -> dict[str, JsonValue]:
+    inventory = render("openwrt-vm-inventory.sh", case=case, vm=vm)
+    command(child, inventory)
+    before = [
+        "release.txt",
+        "kernel.txt",
+        "manager.txt",
+        "packages-before.txt",
+        "dependencies-before.txt",
+        "board.json",
+    ]
+    for name in before:
+        (evidence / name).write_text(command(child, f"cat {GUEST}/{name}", timeout=30))
+    TypeAdapter(dict[str, JsonValue]).validate_json((evidence / "board.json").read_text())
     prepare = render("openwrt-vm-prepare.sh", case=case, vm=vm)
     command(child, prepare)
     script = f"uclient-fetch -q -O {GUEST}/test.sh {feed_url}/test.sh; sh {GUEST}/test.sh"
     command(child, script, timeout=STEP_SECONDS)
     names = [
-        "release.txt",
-        "kernel.txt",
-        "manager.txt",
-        "packages-before.txt",
         "packages-after.txt",
-        "dependencies-before.txt",
         "network.txt",
         "untrusted-update.log",
         "untrusted-status.txt",
@@ -378,7 +479,17 @@ def exercise(
 def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
     if platform.system() != "Linux":
         raise RuntimeError("OpenWrt kernel VM tests must run on a Linux host")
-    case, vm = profile(name), profiles()[name]
+    vm = profiles()[name]
+    package_profile = vm.get("package_profile", name)
+    producer = profile(package_profile)
+    case = {key: value for key, value in producer.items() if not key.startswith("source_")} | {
+        "id": name,
+        "release": vm.get("release", producer["release"]),
+        "expected_id": vm.get("expected_id", "OpenWrt"),
+        "distribution": vm.get("vendor", "OpenWrt"),
+        "arch": vm.get("arch", producer["arch"]),
+    }
+    vm = prepare_vm(vm)
     archives, out = archives.resolve(), out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     evidence = out / name
@@ -389,27 +500,31 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
     try:
         with workspace(evidence, owner) as stage, ExitStack() as stack, deadline():
             (stage / "tmp").mkdir()
-            feed, expected = signed_feed(name, version, archives, stage)
+            feed, expected = signed_feed(package_profile, version, archives, stage)
             shutil.copyfile(feed / "publickey", evidence / "publickey")
             feed_url = serve(feed, evidence, owner, stack)
             (feed / "test.sh").write_text(
                 render("openwrt-vm-test.sh", case=case, feed_url=feed_url, version=version)
             )
-            child = boot(case, stage, evidence, owner, stack)
+            child = boot(vm, stage, evidence, owner, stack)
             traces = exercise(child, case, vm, feed_url, evidence)
             result = {
                 "status": "passed",
                 "profile": case,
+                "package_profile": package_profile,
                 "version": version,
                 "runtime": {
-                    "kind": "OpenWrt kernel VM",
+                    "kind": f"{vm.get('vendor', 'OpenWrt')} kernel VM",
                     "acceleration": "tcg",
                     "cpu": vm["cpu"],
                     "vcpus": 1,
-                    "memory_mib": 256,
+                    "memory_mib": int(vm["memory_mib"]),
                     "kernel": vm["kernel_release"],
                     "uname": vm["uname"],
-                    "images": vm,
+                    "images": {
+                        key: value for key, value in vm.items() if key != "console_password"
+                    },
+                    "firmware": json.loads((evidence / "board.json").read_text()),
                     "host_networking": "QEMU user NAT",
                 },
                 "trust": {
@@ -422,7 +537,7 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
                 },
                 "installed_payload_sha256": expected,
                 "package_sha256": hashlib.sha256(
-                    (feed / "packages" / packages.filename(case, version)).read_bytes()
+                    (feed / "packages" / packages.filename(producer, version)).read_bytes()
                 ).hexdigest(),
                 "traces": traces,
                 "evidence_directory": name,
@@ -441,3 +556,6 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
                 },
             )
     return report
+
+
+VmProfile = StrEnum("VmProfile", {name: name for name in profiles()})

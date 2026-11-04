@@ -21,6 +21,18 @@ Use the architecture from `/etc/openwrt_release`, rather than the CPU name from 
 
 The 32-bit x86 binary requires SSE2. The ARM soft-float binary is tested with VFP and NEON disabled. The package manager must report one of the architectures above; other firmware variants need their own package and runtime test.
 
+## Community firmware
+
+The compatibility tests install the same packages on these community firmware releases:
+
+| Firmware | Package repository | Package architectures |
+| --- | --- | --- |
+| ImmortalWrt 24.10.6 | `24.10/ipk` | `x86_64`, `aarch64_generic`, `mipsel_24kc` |
+| ImmortalWrt 25.12.2 | `25.12/apk` | `x86_64`, `aarch64_generic`, `mipsel_24kc` |
+| Lean LEDE R23.4.1 x86-64 release image | `24.10/ipk` | `x86_64` |
+
+Use the matching repository setup below. The Lean entry refers to the x86-64 image attached to the upstream `20220401` release. Its release label is separate from the revision stored in the image. It is a compatibility fixture for opkg, with the source asset and runtime identity recorded in the VM report.
+
 ## OpenWrt 24.10: opkg
 
 Run these commands as root after the first tagged release containing the OpenWrt feed:
@@ -72,4 +84,6 @@ Every pull request tests the eight architectures on both 24.10.8 and 25.12.6. Of
 
 The userland tests share the Linux host kernel. They verify rejection of an untrusted feed, trusted installation, payload hashes and permissions, removal and reinstallation, and ICMP, UDP and TCP traces over IPv4 and IPv6 loopback. Three additional TCG virtual machines boot the official OpenWrt kernels: x86-64 on both releases and ARM64 on 25.12.6. Their tests remove LuCI and uHTTPd with the guest's package manager before exercising the package.
 
-24.10.8 is a compatibility test line. The test matrix does not establish which firmware is most widely used, and loopback tests do not measure a public Internet route.
+ImmortalWrt adds six userland profiles and four kernel VMs, covering x86-64 and ARM64 on both releases. Lean boots its complete upstream EFI image with OVMF. The VM reports record the firmware identity, kernel, installed packages and dependency information before removing the web interface. Each test then verifies signed installation and runs the same six loopback traces.
+
+24.10.8 is a compatibility test line.

@@ -102,17 +102,19 @@ def write_docs() -> None:
     listing(translations.write())
 
 
-@openwrt_app.command("profiles", help="Print the pinned OpenWrt architecture profiles.")
+@openwrt_app.command(
+    "profiles", help="Print the pinned package and firmware compatibility profiles."
+)
 def openwrt_profiles() -> None:
-    print(json.dumps(openwrt.profiles(), indent=2))
+    print(json.dumps(openwrt.test_profiles(), indent=2))
 
 
 @openwrt_app.command("rootfs", help="Download and verify the pinned root filesystem.")
 def openwrt_rootfs(
-    profile: openwrt.Profile,
+    profile: openwrt.TestProfile,
     out: Path = Path("target/xmtr-ci/openwrt/downloads"),
 ) -> None:
-    listing([openwrt.rootfs(openwrt.profile(profile), out)])
+    listing([openwrt.rootfs(openwrt.test_profile(profile), out)])
 
 
 @openwrt_app.command("build", help="Package one release binary with the pinned OpenWrt SDK.")
@@ -147,7 +149,7 @@ def openwrt_keygen(
 
 @openwrt_app.command("test", help="Install a signed package in the matching OpenWrt userland.")
 def openwrt_test_profile(
-    profile: openwrt.Profile,
+    profile: openwrt.TestProfile,
     version: Version,
     archives: Archives = Path("dist"),
     out: Path = Path("target/openwrt-test"),
@@ -155,9 +157,9 @@ def openwrt_test_profile(
     listing([openwrt_test.test_profile(profile, version, archives, out)])
 
 
-@openwrt_app.command("vm", help="Boot an OpenWrt kernel and test the signed package.")
+@openwrt_app.command("vm", help="Boot the selected firmware's kernel and test the signed package.")
 def openwrt_vm_profile(
-    profile: openwrt.Profile,
+    profile: openwrt_vm.VmProfile,
     version: Version,
     archives: Archives = Path("dist"),
     out: Path = Path("target/openwrt-vm"),

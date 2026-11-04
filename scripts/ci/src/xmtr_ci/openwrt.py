@@ -56,6 +56,8 @@ def profiles() -> tuple[dict[str, str], ...]:
                 {
                     "id": f"{version}-{entry['id']}",
                     "release": version,
+                    "expected_id": "OpenWrt",
+                    "distribution": "OpenWrt",
                     "series": release["series"],
                     "format": release["format"],
                     "sdk": release["sdk"],
@@ -78,6 +80,50 @@ def profiles() -> tuple[dict[str, str], ...]:
 
 def profile(name: str) -> dict[str, str]:
     return {entry["id"]: entry for entry in profiles()}[name]
+
+
+@cache
+def consumer_profiles() -> tuple[dict[str, str], ...]:
+    table = tomllib.loads(files(__package__).joinpath("immortalwrt.toml").read_text())
+    entries = TypeAdapter(list[dict[str, str]]).validate_python(table["profile"])
+    required = {
+        "id",
+        "package_profile",
+        "distribution",
+        "expected_id",
+        "release",
+        "source_kind",
+        "source_url",
+        "source_sha256",
+    }
+    cases = []
+    for entry in entries:
+        if missing := required.difference(entry):
+            raise ValueError(f"ImmortalWrt compatibility profile is missing {sorted(missing)}")
+        package = profile(entry["package_profile"])
+        case = {
+            key: value for key, value in package.items() if not key.startswith("source_")
+        } | entry
+        for field in ("arch", "triple", "format", "series", "sdk", "sdk_config"):
+            if case[field] != package[field]:
+                raise ValueError(f"{entry['id']}: {field} differs from {package['id']}")
+        if case["source_kind"] not in {"tar", "sysupgrade"}:
+            raise ValueError(f"{entry['id']}: unsupported source kind {case['source_kind']}")
+        if case["source_kind"] == "sysupgrade" and "source_member" not in entry:
+            raise ValueError(f"{entry['id']}: sysupgrade source requires a rootfs member")
+        cases.append(case)
+    names = [case["id"] for case in (*profiles(), *cases)]
+    if len(names) != len(set(names)):
+        raise ValueError("OpenWrt package and compatibility profile IDs must be unique")
+    return tuple(cases)
+
+
+def test_profiles() -> tuple[dict[str, str], ...]:
+    return (*profiles(), *consumer_profiles())
+
+
+def test_profile(name: str) -> dict[str, str]:
+    return {entry["id"]: entry for entry in test_profiles()}[name]
 
 
 def rootfs_source(case: dict[str, str]) -> Path:
@@ -158,3 +204,4 @@ def validate_binary(binary: Path, triple: str) -> None:
 
 
 Profile = StrEnum("Profile", {case["id"]: case["id"] for case in profiles()})
+TestProfile = StrEnum("TestProfile", {case["id"]: case["id"] for case in test_profiles()})

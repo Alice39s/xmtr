@@ -1,6 +1,6 @@
 import json
 
-from xmtr_ci.openwrt import profiles
+from xmtr_ci.openwrt import consumer_profiles, profile, profiles
 from xmtr_ci.openwrt_vm import profiles as vm_profiles
 from xmtr_ci.targets import Builder, HostedSmoke, TermuxSmoke, targets
 
@@ -40,10 +40,12 @@ def matrices() -> dict[str, str]:
             "smoke": smoke,
             "android": android,
             "openwrt": [{"profile": case["id"], "target": case["triple"]} for case in profiles()],
+            "openwrt_community": [
+                {"profile": case["id"], "target": case["triple"]} for case in consumer_profiles()
+            ],
             "openwrt_vm": [
-                {"profile": case["id"], "target": case["triple"]}
-                for case in profiles()
-                if case["id"] in vm_profiles()
+                {"profile": name, "target": profile(vm.get("package_profile", name))["triple"]}
+                for name, vm in vm_profiles().items()
             ],
         }.items()
     }

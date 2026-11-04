@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+mkdir -p /root/xmtr-vm/tmp /root/xmtr-vm/default-feeds
+export TMPDIR=/root/xmtr-vm/tmp
+attempt=0
+until ubus -S list network.interface.lan | grep -Fxq network.interface.lan; do
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 60
+    sleep 1
+done
+# shellcheck source=/dev/null
+. /etc/openwrt_release
+cat /etc/openwrt_release > /root/xmtr-vm/release.txt
+uname -a > /root/xmtr-vm/kernel.txt
+cat /root/xmtr-vm/release.txt /root/xmtr-vm/kernel.txt
+test "$DISTRIB_ID" = '{{ case.expected_id }}'
+test "$DISTRIB_RELEASE" = '{{ case.release }}'
+test "$DISTRIB_ARCH" = '{{ case.arch }}'
+{% if vm.get('revision') %}
+test "$DISTRIB_REVISION" = '{{ vm.revision }}'
+{% endif %}
+test "$(uname -m)" = '{{ vm.uname }}'
+test "$(uname -r)" = '{{ vm.kernel_release }}'
+ubus call system board > /root/xmtr-vm/board.json
+{% if case.format == 'ipk' %}
+opkg --version > /root/xmtr-vm/manager.txt
+opkg list-installed > /root/xmtr-vm/packages-before.txt
+opkg status > /root/xmtr-vm/dependencies-before.txt
+{% else %}
+apk --version > /root/xmtr-vm/manager.txt
+apk info --from installed > /root/xmtr-vm/packages-before.txt
+apk info --from installed --depends > /root/xmtr-vm/dependencies-before.txt
+{% endif %}
