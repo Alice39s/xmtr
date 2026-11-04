@@ -43,6 +43,8 @@ services:
       TMPDIR: /work/tmp
       XMTR_FORMAT: {{ case.format | tojson }}
       XMTR_VERSION: {{ version | tojson }}
+      XMTR_RELEASE: {{ case.release | tojson }}
+      XMTR_PACKAGE_ARCH: {{ case.arch | tojson }}
       QEMU_CPU: {{ case.cpu | tojson }}
     volumes:
       - type: bind

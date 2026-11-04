@@ -3,6 +3,11 @@ set -eu
 
 mkdir -p "$TMPDIR" /work/lists /work/cache /work/default-feeds
 uname -sr > /evidence/kernel.txt
+cat /etc/openwrt_release > /evidence/release.txt
+# shellcheck source=/dev/null
+. /etc/openwrt_release
+test "$DISTRIB_RELEASE" = "$XMTR_RELEASE"
+test "$DISTRIB_ARCH" = "$XMTR_PACKAGE_ARCH"
 
 manager() {
 	case "$XMTR_FORMAT" in
