@@ -22,7 +22,7 @@ Package metadata that is not JSON comes from the Jinja templates in `src/xmtr_ci
 | `alpine build` | Builds and installs the APKBUILD for the current commit in Alpine edge |
 | `openwrt profiles` | Prints the pinned firmware, architecture and SDK inputs |
 | `openwrt test <profile>` | Builds and installs a signed native package in the matching OpenWrt userland |
-| `openwrt vm <profile>` | Boots an official OpenWrt kernel under TCG and exercises the package |
+| `openwrt vm <profile>` | Boots the selected firmware's kernel under TCG and exercises the package |
 | `openwrt release` | Signs the tested packages and indexes and writes GitHub release assets |
 | `openwrt check-feed` | Runs the release assembler with temporary signing keys and checks unsigned input hashes |
 | `verify` | Installs a published release through each channel and checks `xmtr --version` |
@@ -39,7 +39,13 @@ Use stable Cargo for `check rust`. Its final step runs `cargo package --workspac
 
 ## OpenWrt packages
 
-`src/xmtr_ci/openwrt.toml` defines the native package and userland test matrix. `openwrt-vms.toml` fixes the three full-kernel VM inputs. Run container and VM commands on a Linux host with Docker Compose, QEMU user registrations, `qemu-system-x86`, `qemu-system-arm`, `fakeroot`, `e2fsprogs` and `squashfs-tools-ng`. Container commands create a unique Compose project and clean up its containers, network and test image. VM tests record process ownership and stop their own QEMU and HTTP processes.
+`src/xmtr_ci/openwrt.toml` defines the native package and official userland test matrix. `immortalwrt.toml` adds community firmware consumers of those packages. Each consumer fixes its vendor root filesystem and expected release identity, then selects an existing package profile with the same architecture and package format. Community tests upload reports separately from the unsigned release packages.
+
+`openwrt-vms.toml`, `immortalwrt-vms.toml` and `lean-vms.toml` fix the full-kernel VM inputs. Run container and VM commands on a Linux host with Docker Compose, QEMU user registrations, `qemu-system-x86`, `qemu-system-arm`, `fakeroot`, `e2fsprogs`, `squashfs-tools-ng`, OVMF and CMake. Container commands create a unique Compose project and clean up its containers, network and test image. VM tests record process ownership and stop their own QEMU and HTTP processes.
+
+MIPS32 userland jobs use Ubuntu's `qemu-user-static` package and its native `binfmt.d` registrations. The hosted runner registers the MIPS and MIPSel interpreters with `systemd-binfmt` before starting a container.
+
+Combined firmware images are downloaded with a fixed size and SHA-256. Images with a trailing fwtool signature use the pinned upstream `fwtool` to validate and extract the trailer before bounded gzip decompression. The extracted gzip payload and disk each have their own size and hash check. Trailer CRC validation does not authenticate the certificate. The Lean entry records the checksum computed from its upstream release asset, the asset's release label and the firmware's own revision separately.
 
 MIPS big-endian, MIPS little-endian and ARM soft-float use the standalone OpenWrt toolchains and official Rust inputs in `openwrt-toolchains.toml`. MIPS builds use the pinned nightly's `build-std` and its matching LLVM libunwind source. Each resulting executable is checked for the requested ELF architecture, static linkage and ARM float ABI before packaging. Builds require CMake, Make, a C++ compiler, Git, xz and zstd; they use two jobs.
 
