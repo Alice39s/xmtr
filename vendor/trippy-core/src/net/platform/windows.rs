@@ -14,7 +14,7 @@ use std::os::windows::prelude::AsRawSocket;
 use std::ptr::{addr_of, addr_of_mut, null_mut};
 use std::time::Duration;
 use tracing::instrument;
-use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Networking::WinSock::{
     AF_INET, AF_INET6, FD_CONNECT, FD_WRITE, ICMP_ERROR_INFO, IN6_ADDR, IN6_ADDR_0, IN_ADDR,
     IN_ADDR_0, IPPROTO_RAW, IPPROTO_TCP, SIO_ROUTING_INTERFACE_QUERY, SOCKADDR_IN, SOCKADDR_IN6,
@@ -23,7 +23,8 @@ use windows_sys::Win32::Networking::WinSock::{
     WSAEADDRNOTAVAIL, WSAECONNREFUSED, WSAEHOSTUNREACH, WSAEINPROGRESS, WSAENETUNREACH, WSAENOBUFS,
     WSA_IO_INCOMPLETE, WSA_IO_PENDING,
 };
-use windows_sys::Win32::System::IO::OVERLAPPED;
+use windows_sys::Win32::System::Threading::INFINITE;
+use windows_sys::Win32::System::IO::{CancelIoEx, OVERLAPPED};
 
 /// Execute a `Win32::Networking::WinSock` syscall.
 ///
@@ -103,6 +104,7 @@ pub struct SocketImpl {
     from_len: Box<i32>,
     recv_flags: Box<u32>,
     bytes_read: u32,
+    recv_submitted: bool,
 }
 
 #[allow(clippy::cast_possible_wrap, clippy::redundant_closure_call)]
@@ -131,6 +133,7 @@ impl SocketImpl {
             from_len,
             recv_flags: Box::new(0),
             bytes_read: 0,
+            recv_submitted: false,
         })
     }
 
@@ -214,9 +217,9 @@ impl SocketImpl {
             .map_err(|err| IoError::Other(err, IoOperation::SetNonBlocking))
     }
 
-    // TODO handle case where `WSARecvFrom` succeeded immediately.
     #[instrument(skip(self), level = "trace")]
     fn post_recv_from(&mut self) -> IoResult<()> {
+        assert!(!self.recv_submitted, "a receive is already submitted");
         fn is_err(res: i32) -> bool {
             res == SOCKET_ERROR
                 && StdIoError::last_os_error().raw_os_error() != Some(WSA_IO_PENDING)
@@ -225,6 +228,10 @@ impl SocketImpl {
             len: MAX_PACKET_SIZE as u32,
             buf: self.buf.as_mut_ptr(),
         };
+        let event = self.ol.hEvent;
+        *self.ol = Self::new_overlapped();
+        self.ol.hEvent = event;
+        *self.from_len = size_of::<SOCKADDR_STORAGE>() as i32;
         *self.recv_flags = 0;
         syscall!(
             WSARecvFrom(
@@ -241,6 +248,9 @@ impl SocketImpl {
             is_err
         )
         .map_err(|err| IoError::Other(err, IoOperation::WSARecvFrom))?;
+        // Both immediate success and WSA_IO_PENDING select event-based completion.
+        self.recv_submitted = true;
+        self.bytes_read = 0;
         Ok(())
     }
 
@@ -248,19 +258,52 @@ impl SocketImpl {
     fn get_overlapped_result(&mut self) -> IoResult<()> {
         let mut bytes_read = 0;
         let mut flags = 0;
-        let ol = *self.ol;
-        syscall!(
+        let result = syscall!(
             WSAGetOverlappedResult(
                 self.inner.as_raw_socket() as _,
-                addr_of!(ol),
+                addr_of!(*self.ol),
                 addr_of_mut!(bytes_read),
                 0,
                 addr_of_mut!(flags),
             ),
             |res| { res == 0 }
-        )
-        .map_err(|err| IoError::Other(err, IoOperation::WSAGetOverlappedResult))?;
+        );
+        // With the original socket, event and OVERLAPPED, only IO_INCOMPLETE leaves this receive
+        // pending. A terminal completion error must not wait on an event the caller may reset.
+        self.recv_submitted = result
+            .as_ref()
+            .is_err_and(|error| error.raw_os_error() == Some(WSA_IO_INCOMPLETE));
+        result.map_err(|err| IoError::Other(err, IoOperation::WSAGetOverlappedResult))?;
         self.bytes_read = bytes_read;
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    fn cancel_pending_receive(&mut self) -> StdIoResult<()> {
+        if !self.recv_submitted {
+            return Ok(());
+        }
+        // Safety: the socket and the original heap-allocated OVERLAPPED remain alive until the
+        // completion event is signaled. CancelIoEx only requests cancellation; it does not wait.
+        let cancelled = unsafe { CancelIoEx(self.inner.as_raw_socket() as _, addr_of!(*self.ol)) };
+        if cancelled == 0 {
+            let error = StdIoError::last_os_error();
+            if error.raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
+                return Err(error);
+            }
+        }
+        // ERROR_NOT_FOUND can mean completion won the cancellation race. The event still has to
+        // finish before its handle, OVERLAPPED, receive buffer or address storage can be released.
+        let completion = syscall_threading!(WaitForSingleObject(self.ol.hEvent, INFINITE));
+        if completion == WAIT_FAILED {
+            return Err(StdIoError::last_os_error());
+        }
+        if completion != WAIT_OBJECT_0 {
+            return Err(StdIoError::other(format!(
+                "unexpected receive completion wait status: {completion}"
+            )));
+        }
+        self.recv_submitted = false;
         Ok(())
     }
 
@@ -292,8 +335,26 @@ impl SocketImpl {
 #[allow(clippy::redundant_closure_call)]
 impl Drop for SocketImpl {
     fn drop(&mut self) {
+        if let Err(error) = self.cancel_pending_receive() {
+            tracing::error!(
+                %error,
+                socket = self.inner.as_raw_socket(),
+                event = self.ol.hEvent,
+                "cannot finish the overlapped receive before socket cleanup"
+            );
+            // Unwinding would release memory that Windows may still be using.
+            std::process::abort();
+        }
         if self.ol.hEvent != -1 && self.ol.hEvent != 0 {
-            syscall!(WSACloseEvent(self.ol.hEvent), |res| { res == 0 }).unwrap_or_default();
+            if let Err(error) = syscall!(WSACloseEvent(self.ol.hEvent), |res| { res == 0 }) {
+                tracing::error!(
+                    %error,
+                    socket = self.inner.as_raw_socket(),
+                    event = self.ol.hEvent,
+                    "cannot close the socket event"
+                );
+                std::process::abort();
+            }
         }
     }
 }
@@ -494,8 +555,11 @@ impl Socket for SocketImpl {
             return Ok(false);
         }
         while let Err(err) = self.get_overlapped_result() {
-            if err.kind() != ErrorKind::Std(StdIoError::from_raw_os_error(WSA_IO_INCOMPLETE).kind())
-            {
+            if !matches!(
+                &err,
+                IoError::Other(error, IoOperation::WSAGetOverlappedResult)
+                    if error.raw_os_error() == Some(WSA_IO_INCOMPLETE)
+            ) {
                 return Err(err);
             }
         }
@@ -507,12 +571,6 @@ impl Socket for SocketImpl {
     fn is_writable(&mut self) -> IoResult<bool> {
         if !self.wait_for_event(Duration::ZERO)? {
             return Ok(false);
-        }
-        while let Err(err) = self.get_overlapped_result() {
-            if err.kind() != ErrorKind::Std(StdIoError::from_raw_os_error(WSA_IO_INCOMPLETE).kind())
-            {
-                return Err(err);
-            }
         }
         self.reset_event()?;
         Ok(true)
@@ -773,6 +831,182 @@ fn lookup_interface_addr(adapters: &Adapters, name: &str) -> Result<IpAddr> {
             }
         })
         .ok_or_else(|| Error::UnknownInterface(name.to_string()))
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::SocketImpl;
+    use crate::error::IoError;
+    use crate::net::channel::MAX_PACKET_SIZE;
+    use crate::net::socket::{Socket, SocketError};
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
+    use std::time::Duration;
+    use windows_sys::Win32::Networking::WinSock::{
+        WSAECONNREFUSED, WSAEMSGSIZE, WSA_IO_INCOMPLETE, WSA_OPERATION_ABORTED,
+    };
+
+    fn udp_receiver() -> SocketImpl {
+        SocketImpl::startup().unwrap();
+        let mut socket = SocketImpl::new_udp_dgram_socket_ipv4().unwrap();
+        socket
+            .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .unwrap();
+        socket
+    }
+
+    fn address(socket: &SocketImpl) -> SocketAddr {
+        socket.inner.local_addr().unwrap().as_socket().unwrap()
+    }
+
+    fn send(receiver: &SocketImpl, data: &[u8]) {
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        assert_eq!(sender.send_to(data, address(receiver)).unwrap(), data.len());
+    }
+
+    fn assert_os_error(error: IoError, expected: i32) {
+        match error {
+            IoError::Other(error, _) | IoError::Connect(error, _) => {
+                assert_eq!(error.raw_os_error(), Some(expected));
+            }
+            error => panic!("unexpected socket error: {error}"),
+        }
+    }
+
+    #[test]
+    fn cancels_a_pending_receive_before_reusing_its_storage() {
+        let mut receiver = udp_receiver();
+        receiver.post_recv_from().unwrap();
+        assert!(receiver.recv_submitted);
+        assert_os_error(
+            receiver.get_overlapped_result().unwrap_err(),
+            WSA_IO_INCOMPLETE,
+        );
+        assert!(receiver.recv_submitted);
+
+        receiver.cancel_pending_receive().unwrap();
+        assert!(!receiver.recv_submitted);
+        assert_os_error(
+            receiver.get_overlapped_result().unwrap_err(),
+            WSA_OPERATION_ABORTED,
+        );
+        receiver.post_recv_from().unwrap();
+        send(&receiver, b"reposted receive");
+        assert!(receiver.is_readable(Duration::from_secs(2)).unwrap());
+        let mut buffer = [0; 64];
+        let count = receiver.read(&mut buffer).unwrap();
+        assert_eq!(&buffer[..count], b"reposted receive");
+    }
+
+    #[test]
+    fn drops_a_socket_with_a_pending_receive() {
+        let mut receiver = udp_receiver();
+        receiver.post_recv_from().unwrap();
+        assert!(receiver.recv_submitted);
+        drop(receiver);
+    }
+
+    #[test]
+    fn receives_a_buffered_datagram() {
+        let mut receiver = udp_receiver();
+        send(&receiver, b"buffered receive");
+        receiver.post_recv_from().unwrap();
+        assert!(receiver.is_readable(Duration::from_secs(2)).unwrap());
+        let mut buffer = [0; 64];
+        let count = receiver.read(&mut buffer).unwrap();
+        assert_eq!(&buffer[..count], b"buffered receive");
+    }
+
+    #[test]
+    fn receives_after_the_socket_is_moved() {
+        let mut receiver = udp_receiver();
+        receiver.post_recv_from().unwrap();
+        let overlapped = std::ptr::from_ref(receiver.ol.as_ref());
+        let mut receiver = Box::new(receiver);
+        let receiver = receiver.as_mut();
+        assert_eq!(std::ptr::from_ref(receiver.ol.as_ref()), overlapped);
+        send(receiver, b"moved receive");
+        assert!(receiver.is_readable(Duration::from_secs(2)).unwrap());
+        let mut buffer = [0; 64];
+        let count = receiver.read(&mut buffer).unwrap();
+        assert_eq!(&buffer[..count], b"moved receive");
+    }
+
+    #[test]
+    fn drops_a_ready_receive_before_reading_its_data() {
+        let mut receiver = udp_receiver();
+        receiver.post_recv_from().unwrap();
+        send(&receiver, b"ready receive");
+        assert!(receiver.is_readable(Duration::from_secs(2)).unwrap());
+        assert!(!receiver.recv_submitted);
+        assert!(!receiver.wait_for_event(Duration::ZERO).unwrap());
+        drop(receiver);
+    }
+
+    #[test]
+    fn finishes_when_completion_wins_the_cancellation_race() {
+        let mut receiver = udp_receiver();
+        receiver.post_recv_from().unwrap();
+        send(&receiver, b"completed receive");
+        assert!(receiver.wait_for_event(Duration::from_secs(2)).unwrap());
+        receiver.cancel_pending_receive().unwrap();
+        assert!(!receiver.recv_submitted);
+        receiver.get_overlapped_result().unwrap();
+        let mut buffer = [0; 64];
+        let count = receiver.read(&mut buffer).unwrap();
+        assert_eq!(&buffer[..count], b"completed receive");
+    }
+
+    #[test]
+    fn clears_receive_state_after_a_terminal_completion_error() {
+        let mut receiver = udp_receiver();
+        receiver.post_recv_from().unwrap();
+        send(&receiver, &[0; MAX_PACKET_SIZE + 1]);
+        assert_os_error(
+            receiver.is_readable(Duration::from_secs(2)).unwrap_err(),
+            WSAEMSGSIZE,
+        );
+        assert!(!receiver.recv_submitted);
+    }
+
+    #[test]
+    fn reports_tcp_connect_readiness_without_an_overlapped_receive() {
+        SocketImpl::startup().unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut socket = SocketImpl::new_stream_socket_ipv4().unwrap();
+        socket
+            .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .unwrap();
+        socket.connect(listener.local_addr().unwrap()).unwrap();
+        assert!(socket.wait_for_event(Duration::from_secs(2)).unwrap());
+        assert!(socket.is_writable().unwrap());
+        assert!(socket.take_error().unwrap().is_none());
+        assert!(!socket.recv_submitted);
+        let (_connection, _) = listener.accept().unwrap();
+    }
+
+    #[test]
+    fn reports_tcp_connect_errors_without_an_overlapped_receive() {
+        SocketImpl::startup().unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let refused = listener.local_addr().unwrap();
+        drop(listener);
+        let mut socket = SocketImpl::new_stream_socket_ipv4().unwrap();
+        socket
+            .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .unwrap();
+        match socket.connect(refused) {
+            Ok(()) => {
+                assert!(socket.wait_for_event(Duration::from_secs(5)).unwrap());
+                assert!(socket.is_writable().unwrap());
+                assert!(matches!(
+                    socket.take_error().unwrap(),
+                    Some(SocketError::ConnectionRefused)
+                ));
+            }
+            Err(error) => assert_os_error(error, WSAECONNREFUSED),
+        }
+        assert!(!socket.recv_submitted);
+    }
 }
 
 mod adapter {
