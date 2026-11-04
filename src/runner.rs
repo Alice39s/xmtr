@@ -150,6 +150,44 @@ struct HostReplies {
 
 type HostLog = HashMap<(u8, IpAddr), HostReplies>;
 
+/// The core state and address metadata published by the same completed round.
+struct CompletedTrace {
+    state: State,
+    replies: HostLog,
+}
+
+impl CompletedTrace {
+    fn new(state: State) -> Self {
+        Self {
+            state,
+            replies: HostLog::new(),
+        }
+    }
+
+    fn publish(&mut self, state: State, round: &Round<'_>) {
+        record_round(&mut self.replies, round);
+        self.state = state;
+    }
+
+    fn route(
+        &self,
+        job: &Job,
+        protocol: Protocol,
+        started: SystemTime,
+        elapsed: Duration,
+    ) -> model::Route {
+        route_from_state(
+            job,
+            protocol,
+            &self.state,
+            &self.replies,
+            self.state.round_count(State::default_flow_id()),
+            started,
+            elapsed,
+        )
+    }
+}
+
 /// The MPLS label stack in a reply's ICMP extensions, top entry first.
 fn mpls_stack(extensions: &Extensions) -> Option<Vec<model::MplsLabel>> {
     extensions
@@ -293,14 +331,17 @@ fn trace(
 ) -> Result<model::Route> {
     let started = SystemTime::now();
     let clock = Instant::now();
-    let replies = Arc::new(Mutex::new(HostLog::new()));
-    let log = Arc::clone(&replies);
-    let (tracer, handle) = build_tracer(job, probe, slot, settings)?
+    let tracer = build_tracer(job, probe, slot, settings)?;
+    let completed = Arc::new(Mutex::new(CompletedTrace::new(tracer.snapshot())));
+    let published = Arc::clone(&completed);
+    let core = tracer.clone();
+    let (tracer, handle) = tracer
         .spawn_with(move |round| {
-            record_round(
-                &mut log.lock().unwrap_or_else(PoisonError::into_inner),
-                round,
-            );
+            let state = core.snapshot();
+            published
+                .lock()
+                .expect("completed trace snapshot lock poisoned while publishing a round")
+                .publish(state, round);
         })
         .map_err(|error| anyhow!("{error}"))?;
     let flow = State::default_flow_id();
@@ -308,13 +349,21 @@ fn trace(
 
     loop {
         thread::sleep(POLL_INTERVAL);
-        let state = tracer.snapshot();
-        if let Some(error) = state.error() {
+        if let Some(error) = tracer.snapshot().error() {
             return Err(anyhow!("{error}"));
         }
-        let rounds = state.round_count(flow);
-        let is_reached = reached(&state, job.addr);
-        convergence.observe(rounds, responders(&state));
+        let (rounds, is_reached, hosts) = {
+            let completed = completed.lock().map_err(|_| {
+                anyhow!("completed trace snapshot lock poisoned while reading progress")
+            })?;
+            let state = &completed.state;
+            (
+                state.round_count(flow),
+                reached(state, job.addr),
+                responders(state),
+            )
+        };
+        convergence.observe(rounds, hosts);
         board.update(probe.row, |row| {
             row.rounds = rounds;
             row.reached = is_reached;
@@ -332,20 +381,13 @@ fn trace(
                     .map_err(|error| anyhow!("{error}"))?;
             }
             // A tracer that is still running ends on its own after `tracer_rounds` rounds.
-            let state = tracer.snapshot();
-            let replies = replies
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone();
-            return Ok(route_from_state(
-                job,
-                probe.protocol,
-                &state,
-                &replies,
-                state.round_count(flow),
-                started,
-                clock.elapsed(),
-            ));
+            if let Some(error) = tracer.snapshot().error() {
+                return Err(anyhow!("{error}"));
+            }
+            let completed = completed.lock().map_err(|_| {
+                anyhow!("completed trace snapshot lock poisoned while building the route")
+            })?;
+            return Ok(completed.route(job, probe.protocol, started, clock.elapsed()));
         }
     }
 }
@@ -619,6 +661,71 @@ mod tests {
         assert_eq!(second.best, Some(Duration::from_millis(90)));
         assert_eq!(second.mpls.len(), 1);
         assert_eq!(log.len(), 2);
+    }
+
+    #[test]
+    fn publishes_round_state_and_host_metadata_together() {
+        let job = job("192.0.2.2", None);
+        let mut core = Builder::new(job.addr).build().unwrap().snapshot();
+        let mut completed = CompletedTrace::new(core.clone());
+        let report = |completed: &CompletedTrace| {
+            completed.route(&job, Protocol::Icmp, SystemTime::UNIX_EPOCH, Duration::ZERO)
+        };
+        let first = [reply(1, "192.0.2.1", 40, &[100])];
+        let first_round = Round::new(
+            &first,
+            trippy_core::TimeToLive(1),
+            trippy_core::CompletionReason::RoundTimeLimitExceeded,
+        );
+        core.update_from_round(&first_round);
+        assert_eq!(core.round_count(State::default_flow_id()), 1);
+        let before_publish = report(&completed);
+        assert_eq!(before_publish.rounds, 0);
+        assert!(before_publish.hops.is_empty());
+
+        completed.publish(core.clone(), &first_round);
+        let first_report = report(&completed);
+        assert_eq!(first_report.rounds, 1);
+        assert_eq!(first_report.hops.len(), 1);
+        assert_eq!(first_report.hops[0].hosts[0].best_ms, Some(40.0));
+        assert_eq!(first_report.hops[0].hosts[0].mpls[0].label, 100);
+
+        let mut second = [
+            reply(1, "192.0.2.1", 20, &[200]),
+            reply(2, "192.0.2.2", 30, &[300]),
+        ];
+        for probe in &mut second {
+            if let ProbeStatus::Complete(reply) = probe {
+                reply.round = trippy_core::RoundId(1);
+            }
+        }
+        let second_round = Round::new(
+            &second,
+            trippy_core::TimeToLive(2),
+            trippy_core::CompletionReason::TargetFound,
+        );
+        core.update_from_round(&second_round);
+        assert_eq!(core.round_count(State::default_flow_id()), 2);
+        let before_publish = report(&completed);
+        assert_eq!(before_publish.rounds, 1);
+        assert_eq!(before_publish.hops.len(), 1);
+        assert!(!before_publish.reached);
+        assert_eq!(before_publish.hops[0].hosts[0].best_ms, Some(40.0));
+        assert_eq!(before_publish.hops[0].hosts[0].mpls[0].label, 100);
+
+        completed.publish(core, &second_round);
+        let final_report = report(&completed);
+        assert_eq!(final_report.rounds, 2);
+        assert!(final_report.reached);
+        assert_eq!(final_report.hops.len(), 2);
+        for (hop, ip, best_ms, label) in [
+            (&final_report.hops[0], "192.0.2.1", 20.0, 200),
+            (&final_report.hops[1], "192.0.2.2", 30.0, 300),
+        ] {
+            assert_eq!(hop.hosts[0].ip, ip);
+            assert_eq!(hop.hosts[0].best_ms, Some(best_ms));
+            assert_eq!(hop.hosts[0].mpls[0].label, label);
+        }
     }
 
     #[test]
@@ -928,6 +1035,14 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         let route = outcomes[0].result.as_ref().unwrap();
         assert_eq!((route.protocol, route.reached), ("icmp", true));
+        assert!(!route.hops.is_empty());
+        assert!(
+            route
+                .hops
+                .iter()
+                .flat_map(|hop| &hop.hosts)
+                .all(|host| host.best_ms.is_some())
+        );
         assert_eq!(rows(&board), [row("127.0.0.1", Protocol::Icmp, false)]);
     }
 }
