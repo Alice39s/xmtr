@@ -30,7 +30,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["traceroute", "mtr", "network", "trippy", "geolocation"]
 categories = ["command-line-utilities", "network-programming"]
-include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+include = ["/src/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 # cargo binstall downloads the release archive instead of building from source.
 [package.metadata.binstall]
