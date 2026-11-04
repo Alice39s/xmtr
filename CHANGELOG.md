@@ -1,3 +1,53 @@
+## 0.3.5 (2026-11-04)
+
+### Features
+
+#### Show and upload the MPLS label stacks that routers quote
+
+A router that forwards a probe inside an MPLS tunnel can quote the tunnel's label stack in its ICMP reply (RFC 4950). xmtr now reads these extensions. The result table lists each label under the router's address, such as `[MPLS: Lbl 24001 TC 0 S 1 TTL 1]`, the form `mtr -e` prints, and the upload carries the stack with the address, so IPMap knows which hops answered from inside a tunnel. ([#36](https://github.com/Alice39s/xmtr/pull/36))
+
+### Fixes
+
+#### Install the patched tracer core through Cargo
+
+Cargo installations now use `xmtr-trippy-core`, the same patched core as the release binaries. This includes the Windows receive memory fix, Android IPv4 header handling and Unix socket polling for large sets of open descriptors. The core is published before xmtr and shares its version. ([#36](https://github.com/Alice39s/xmtr/pull/36))
+
+#### Package the binary source and root documentation for Cargo
+
+Cargo source archives select `src/`, the root README and the two license files. Packaging after tests now uses the same inputs as a clean checkout, including when local tools have created other README files. ([#36](https://github.com/Alice39s/xmtr/pull/36))
+
+#### Keep each route's statistics and address metadata on the same round
+
+Reports use one completed-round snapshot for hop statistics, per-address round trips and MPLS label stacks, including when a trace ends because its route is stable or its time limit is reached. ([#38](https://github.com/Alice39s/xmtr/pull/38))
+
+#### Keep each round of a UDP trace on one path
+
+Classic UDP probes change their destination port with every probe, so a router that spreads flows over parallel links can send each hop's probe down a different link. UDP over raw sockets now uses Dublin traceroute, keeping both ports fixed within each round and matching replies even when NAT changes the UDP checksum. ICMP, TCP and UDP over unprivileged sockets use classic probes. ([#36](https://github.com/Alice39s/xmtr/pull/36))
+
+#### Read the README in Simplified and Traditional Chinese
+
+The README is also available in Simplified Chinese and in Traditional Chinese for Taiwan, Hong Kong and Macau, linked at the top of every version. It opens with a recording of a run in the terminal and of the route replay in IPMap, and lists common commands under Usage. ([#35](https://github.com/Alice39s/xmtr/pull/35))
+
+#### Upload the best round trip of each address at a hop
+
+When several addresses answer at the same TTL, the round-trip statistics of the hop mix all of their replies. The upload now also carries the lowest round trip of each address's own replies, so IPMap can bound how far each address is from the source by its own replies. ([#36](https://github.com/Alice39s/xmtr/pull/36))
+
+#### Report completed Windows receive errors
+
+Return completed receive errors to the tracer instead of polling them as unfinished operations. Only an incomplete Windows overlapped operation is retried. ([#38](https://github.com/Alice39s/xmtr/pull/38))
+
+#### Finish Windows receives before closing their sockets
+
+Wait for submitted Windows receives to finish cancellation before releasing their event or receive storage. Poll completed receives through their original overlapped state. ([#38](https://github.com/Alice39s/xmtr/pull/38))
+
+#### Stop Windows traces from overwriting memory when a reply arrives
+
+On Windows, each reply made the system write the receive flags and the length of the source address into stack memory that the tracer no longer owned, overwriting whatever the tracer kept there at that moment. Depending on how a build was laid out, this went unnoticed or crashed the trace with an access violation. Both values now live on the heap. ([#36](https://github.com/Alice39s/xmtr/pull/36))
+
+#### Read Windows TCP connection readiness from socket events
+
+Use TCP connection events to report writable probes and connection errors without querying a receive operation. ([#38](https://github.com/Alice39s/xmtr/pull/38))
+
 ## 0.3.4 (2026-10-31)
 
 ### Features

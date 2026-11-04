@@ -60,7 +60,7 @@ Both scripts pick the build for your system, check it against the release `SHA25
 Pass installer options after `bash -s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash -s -- --dir ~/bin --version v0.3.4
+curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash -s -- --dir ~/bin --version v0.3.5
 ```
 
 `XMTR_INSTALL_DIR` sets the directory, and `XMTR_RELEASES` points both the script and the installer at a mirror of the releases page. On Windows these two variables are the only way to pass options.
