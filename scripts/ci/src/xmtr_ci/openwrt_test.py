@@ -234,6 +234,7 @@ def test_profile(name: str, version: str, archives: Path, out: Path) -> Path:
                         "runtime": {
                             "kind": "OpenWrt userland container",
                             "kernel": (evidence / "kernel.txt").read_text().strip(),
+                            "firmware": (evidence / "release.txt").read_text().strip(),
                             "shares_host_kernel": True,
                             "image_platform": PLATFORMS[case["qemu"]],
                             "host_machine": platform.machine(),

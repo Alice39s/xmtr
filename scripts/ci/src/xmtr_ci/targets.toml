@@ -46,7 +46,7 @@ docker = "linux/arm/v6"
 [[target]]
 triple = "i686-unknown-linux-musl"
 builder = "zigbuild"
-smoke = { os = "ubuntu-latest" }
+smoke = { os = "ubuntu-latest", qemu = "i386", cpu = "pentium3,+sse2,-pni,-ssse3,-sse4.1,-sse4.2,-avx,-avx2" }
 npm = "linux-ia32"
 wheel = ["manylinux_2_17_i686", "manylinux2014_i686", "musllinux_1_1_i686"]
 deb = "i386"
