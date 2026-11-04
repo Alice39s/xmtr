@@ -32,8 +32,12 @@ case "$XMTR_PACKAGE_ARCH" in
 *[!0-9a-z_+-]*) fail "invalid OpenWrt architecture: $XMTR_PACKAGE_ARCH" ;;
 esac
 
-[ -f "$XMTR_BINARY" ] && [ -x "$XMTR_BINARY" ] || fail "binary is not executable: $XMTR_BINARY"
-[ -d "$TMPDIR" ] && [ -w "$TMPDIR" ] || fail "build directory is not writable: $TMPDIR"
+if [ ! -f "$XMTR_BINARY" ] || [ ! -x "$XMTR_BINARY" ]; then
+	fail "binary is not executable: $XMTR_BINARY"
+fi
+if [ ! -d "$TMPDIR" ] || [ ! -w "$TMPDIR" ]; then
+	fail "build directory is not writable: $TMPDIR"
+fi
 
 binary_dir=$(dirname "$XMTR_BINARY")
 for license in LICENSE-MIT LICENSE-APACHE; do

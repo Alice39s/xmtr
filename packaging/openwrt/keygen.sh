@@ -28,7 +28,9 @@ apk)
 *) fail "unsupported key format: $1" ;;
 esac
 [ -x "$tool" ] || fail "SDK key tool is missing: $tool"
-[ ! -e "$secret" ] && [ ! -e "$public" ] || fail "key files already exist in $XMTR_KEY_DIR"
+if [ -e "$secret" ] || [ -e "$public" ]; then
+	fail "key files already exist in $XMTR_KEY_DIR"
+fi
 
 mkdir -p "$XMTR_KEY_DIR"
 [ "$(realpath "$XMTR_KEY_DIR")" != / ] || fail 'the key directory must not be the filesystem root'
