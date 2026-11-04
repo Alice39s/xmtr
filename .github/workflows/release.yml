@@ -25,6 +25,8 @@ jobs:
       build: ${{ steps.matrix.outputs.build }}
       smoke: ${{ steps.matrix.outputs.smoke }}
       android: ${{ steps.matrix.outputs.android }}
+      openwrt: ${{ steps.matrix.outputs.openwrt }}
+      openwrt_vm: ${{ steps.matrix.outputs.openwrt_vm }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -89,17 +91,21 @@ jobs:
       matrix: ${{ fromJSON(needs.check.outputs.build) }}
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - if: matrix.builder != 'openwrt'
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - if: matrix.builder == 'zigbuild'
         uses: mlugg/setup-zig@v2
         with:
           version: 0.14.1
-      - uses: taiki-e/install-action@v2
+      - if: matrix.tool != ''
+        uses: taiki-e/install-action@v2
         with:
           tool: ${{ matrix.tool }}
       - uses: ./.github/actions/xmtr-ci
+      - if: matrix.builder == 'openwrt'
+        run: sudo apt-get update && sudo apt-get install --yes cmake g++ make xz-utils zstd
       # Builds without the secret, such as pull requests from forks, send no reports.
       - env:
           XMTR_TELEMETRY_DSN: ${{ secrets.XMTR_TELEMETRY_DSN }}
@@ -166,7 +172,82 @@ jobs:
       - uses: ./.github/actions/xmtr-ci
       - run: uv run xmtr-ci smoke ${{ matrix.target }} --trace
 
-  # Builds the npm, PyPI, deb, rpm and apk packages from the archives and installs each one once.
+  # Installs each native package with its release's signature-verifying package manager.
+  openwrt:
+    name: OpenWrt ${{ matrix.profile }}
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.check.outputs.openwrt) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: xmtr-${{ matrix.target }}
+          path: dist
+      - uses: docker/setup-qemu-action@v4
+      - run: sudo apt-get update && sudo apt-get install --yes squashfs-tools-ng
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci openwrt test ${{ matrix.profile }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-packages-${{ matrix.profile }}
+          path: target/openwrt-test/packages/
+          if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-report-${{ matrix.profile }}
+          path: |
+            target/openwrt-test/${{ matrix.profile }}.json
+            target/openwrt-test/${{ matrix.profile }}/
+
+  openwrt-feed:
+    needs: openwrt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: openwrt-packages-*
+          path: packages/openwrt
+          merge-multiple: true
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci openwrt check-feed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-feed-report
+          path: target/openwrt-feed-test/report.json
+
+  openwrt-vm:
+    name: OpenWrt kernel ${{ matrix.profile }}
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.check.outputs.openwrt_vm) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: xmtr-${{ matrix.target }}
+          path: dist
+      - run: sudo apt-get update && sudo apt-get install --yes qemu-system-x86 qemu-system-arm e2fsprogs fakeroot
+      - uses: ./.github/actions/xmtr-ci
+      - run: uv run xmtr-ci openwrt vm ${{ matrix.profile }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-kernel-report-${{ matrix.profile }}
+          path: |
+            target/openwrt-vm/
+            !target/openwrt-vm/**/.work-*/**
+
+  # Builds the npm, PyPI, deb, rpm and Alpine apk packages and installs each one once.
   packages:
     needs: build
     runs-on: ubuntu-latest
@@ -246,7 +327,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, nix, build, smoke, smoke-freebsd, smoke-android, packages, chocolatey, docker, alpine]
+    needs: [msrv, test, nix, build, smoke, smoke-freebsd, smoke-android, openwrt-feed, openwrt-vm, packages, chocolatey, docker, alpine]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -263,7 +344,21 @@ jobs:
         with:
           name: packages-linux
           path: dist
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: openwrt-packages-*
+          path: packages/openwrt
+          merge-multiple: true
       - uses: ./.github/actions/xmtr-ci
+      - env:
+          OPENWRT_USIGN_KEY: ${{ secrets.OPENWRT_USIGN_KEY }}
+          OPENWRT_APK_KEY: ${{ secrets.OPENWRT_APK_KEY }}
+        run: uv run xmtr-ci openwrt release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-signed
+          path: packages/openwrt-signed/
+          if-no-files-found: error
       - run: uv run xmtr-ci release prepare
       - uses: actions/attest-build-provenance@v2
         with:
@@ -386,7 +481,7 @@ jobs:
           packages-dir: wheels
           skip-existing: true
 
-  # Publishes the apt, dnf and apk repositories at https://alice39s.github.io/xmtr/.
+  # Publishes apt, dnf, Alpine apk and OpenWrt repositories at https://alice39s.github.io/xmtr/.
   pages:
     needs: release
     runs-on: ubuntu-latest
@@ -402,6 +497,10 @@ jobs:
         with:
           name: packages-linux
           path: packages
+      - uses: actions/download-artifact@v5
+        with:
+          name: openwrt-signed
+          path: packages/openwrt-signed
       - uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: reprepro createrepo-c

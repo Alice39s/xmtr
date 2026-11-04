@@ -8,7 +8,7 @@ from xmtr_ci.targets import HostedSmoke, target, targets
 
 def test_triples_are_unique() -> None:
     triples = [t.triple for t in targets()]
-    assert len(triples) == len(set(triples)) == 28
+    assert len(triples) == len(set(triples)) == 31
 
 
 def test_every_target_builds_and_smokes() -> None:

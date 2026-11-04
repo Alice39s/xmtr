@@ -1,0 +1,96 @@
+#!/bin/sh
+set -eu
+export DO_NOT_TRACK=1
+export TMPDIR=/root/xmtr-vm/tmp
+mkdir -p "$TMPDIR" /root/xmtr-vm/lists /root/xmtr-vm/cache
+dump_logs() {
+    result=$1
+    for log in /root/xmtr-vm/*.log; do
+        [ ! -f "$log" ] || cat "$log"
+    done
+    exit "$result"
+}
+trap 'dump_logs "$?"' EXIT
+{% if case.format == 'ipk' %}
+printf '%s\n' 'dest root /' 'lists_dir ext /root/xmtr-vm/lists' \
+    'option check_signature' 'src/gz xmtr {{ feed_url }}/packages' > /root/xmtr-vm/repositories
+manager() {
+    opkg -f /root/xmtr-vm/repositories --tmp-dir "$TMPDIR" "$@"
+}
+{% else %}
+printf '%s\n' '{{ feed_url }}/packages/packages.adb' > /root/xmtr-vm/repositories
+manager() {
+    apk --repositories-file /root/xmtr-vm/repositories --cache-dir /root/xmtr-vm/cache "$@"
+}
+{% endif %}
+if manager update > /root/xmtr-vm/untrusted-update.log 2>&1; then
+    printf '0\n' > /root/xmtr-vm/untrusted-status.txt
+else
+    printf '%s\n' "$?" > /root/xmtr-vm/untrusted-status.txt
+fi
+{% if case.format == 'ipk' %}
+grep -Fq 'Signature check failed' /root/xmtr-vm/untrusted-update.log
+test ! -s /root/xmtr-vm/lists/xmtr
+manager list xmtr > /root/xmtr-vm/untrusted-candidates.txt
+if manager install xmtr > /root/xmtr-vm/untrusted-install.log 2>&1; then
+    exit 1
+fi
+grep -Fq 'Unknown package' /root/xmtr-vm/untrusted-install.log
+{% else %}
+test "$(cat /root/xmtr-vm/untrusted-status.txt)" != 0
+grep -Fq 'UNTRUSTED signature' /root/xmtr-vm/untrusted-update.log
+if manager search -x xmtr > /root/xmtr-vm/untrusted-candidates.txt 2> /root/xmtr-vm/untrusted-search.log; then
+    :
+fi
+if manager add xmtr > /root/xmtr-vm/untrusted-install.log 2>&1; then
+    exit 1
+fi
+grep -Fiq 'no such package' /root/xmtr-vm/untrusted-install.log
+{% endif %}
+test ! -s /root/xmtr-vm/untrusted-candidates.txt
+test ! -e /usr/bin/xmtr
+uclient-fetch -q -O /root/xmtr-vm/publickey '{{ feed_url }}/publickey'
+{% if case.format == 'ipk' %}
+opkg-key add /root/xmtr-vm/publickey
+manager update > /root/xmtr-vm/trusted-update.log 2>&1
+grep -Fq 'Signature check passed' /root/xmtr-vm/trusted-update.log
+manager install xmtr > /root/xmtr-vm/install.log 2>&1
+{% else %}
+cp /root/xmtr-vm/publickey /etc/apk/keys/xmtr-vm.pem
+manager update > /root/xmtr-vm/trusted-update.log 2>&1
+manager add xmtr > /root/xmtr-vm/install.log 2>&1
+{% endif %}
+test "$(/usr/bin/xmtr --version)" = 'xmtr {{ version }}'
+/usr/bin/xmtr --version > /root/xmtr-vm/version.txt
+ls -ln /usr/bin/xmtr > /root/xmtr-vm/installed-mode.txt
+uclient-fetch -q -O /root/xmtr-vm/expected.sha256 '{{ feed_url }}/expected.sha256'
+sha256sum -c /root/xmtr-vm/expected.sha256 > /root/xmtr-vm/installed-checksums.log
+for protocol in icmp udp tcp; do
+    for family in 4 6; do
+        case "$family" in
+            4) destination=127.0.0.1 ;;
+            6) destination=::1 ;;
+        esac
+        /usr/bin/xmtr --json --no-upload --no-rdns --hide-origin \
+            --progress plain --theme dark-ansi --min-rounds 3 --max-rounds 3 \
+            --interval 100ms --time-limit 10s --max-ttl 4 --parallel 1 \
+            --protocol "$protocol" "-$family" "$destination" \
+            > "/root/xmtr-vm/$protocol-ipv$family.json" \
+            2> "/root/xmtr-vm/$protocol-ipv$family.stderr.txt"
+    done
+done
+{% if case.format == 'ipk' %}
+manager remove xmtr > /root/xmtr-vm/uninstall.log 2>&1
+test ! -e /usr/bin/xmtr
+test -z "$(opkg list-installed xmtr)"
+manager install xmtr > /root/xmtr-vm/reinstall.log 2>&1
+{% else %}
+manager del xmtr > /root/xmtr-vm/uninstall.log 2>&1
+test ! -e /usr/bin/xmtr
+if apk info --from installed --exists xmtr; then
+    exit 1
+fi
+manager add xmtr > /root/xmtr-vm/reinstall.log 2>&1
+{% endif %}
+sha256sum -c /root/xmtr-vm/expected.sha256 > /root/xmtr-vm/reinstalled-checksums.log
+test "$(/usr/bin/xmtr --version)" = 'xmtr {{ version }}'

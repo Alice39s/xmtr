@@ -67,24 +67,27 @@ def apk(packages: Path, site: Path, key: SecretStr) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         shutil.copy(package, directory / f"{name}-{version_release}.apk")
     script = """
+        umask 077
         apk add --quiet abuild
         cp /repo/xmtr.rsa.pub /etc/apk/keys/xmtr.rsa.pub
-        printf '%s\\n' "$APK_SIGNING_KEY" > /tmp/xmtr.rsa
+        printf '%s\\n' "$APK_SIGNING_KEY" > /work/xmtr.rsa
+        umask 022
         for dir in /repo/*/; do
           cd "$dir"
           apk index --quiet --output APKINDEX.tar.gz ./*.apk
-          abuild-sign -q -k /tmp/xmtr.rsa -p xmtr.rsa.pub APKINDEX.tar.gz
+          abuild-sign -q -k /work/xmtr.rsa -p xmtr.rsa.pub APKINDEX.tar.gz
         done
         chown -R "$(stat -c %u:%g /repo)" /repo
     """
     run(
         "docker", "run", "--rm", "--env", "APK_SIGNING_KEY", "--volume", f"{site / 'apk'}:/repo",
+        "--tmpfs", "/work:rw,nosuid,nodev,size=8m,mode=1777",
         "alpine:3.22", "sh", "-euc", script,
         env={"APK_SIGNING_KEY": key.get_secret_value()},
     )  # fmt: skip
 
 
-def build(packages: Path, site: Path, secrets: Secrets) -> list[Path]:
+def build(packages: Path, site: Path, secrets: Secrets, *, openwrt_feed: Path) -> list[Path]:
     if secrets.packages_gpg_key is None or secrets.apk_signing_key is None:
         raise SystemExit("PACKAGES_GPG_KEY and APK_SIGNING_KEY sign the repositories")
     check_apk_key(secrets.apk_signing_key)
@@ -100,4 +103,5 @@ def build(packages: Path, site: Path, secrets: Secrets) -> list[Path]:
         apt(packages, site, gpg, fingerprint)
         dnf(packages, site, gpg, fingerprint)
     apk(packages, site, secrets.apk_signing_key)
+    shutil.copytree(openwrt_feed, site / "openwrt")
     return sorted(path for path in site.rglob("*") if path.is_file())

@@ -41,7 +41,7 @@ The second command traces 1.1.1.1 and cloudflare.com, over IPv4 and IPv6 when th
 curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bash
 ```
 
-The script is POSIX `sh`, so `| sh` works on systems without bash, such as OpenWrt. As a regular user it installs into `/usr/local/bin` through `sudo`, so `sudo xmtr` finds the binary; sudo may ask for your password. Without sudo rights it installs into `~/.local/bin`.
+The script is POSIX `sh`, so `| sh` works on systems without bash. On OpenWrt, use the [native package repository](docs/openwrt.md). As a regular user it installs into `/usr/local/bin` through `sudo`, so `sudo xmtr` finds the binary; sudo may ask for your password. Without sudo rights it installs into `~/.local/bin`.
 
 **Windows**
 
@@ -109,6 +109,10 @@ apk add xmtr
 ```
 
 The repositories are signed with the keys in [`packaging/keys`](packaging/keys). The release workflow publishes every channel above except mise and Nix, which read the GitHub release and the flake directly.
+
+### OpenWrt
+
+Native packages are built for OpenWrt 24.10 (`opkg`) and 25.12 (APK v3), covering x86-64, x86 with SSE2, ARM64, ARMv7 hard-float and soft-float, and MIPS 24Kc in both byte orders. The [OpenWrt guide](docs/openwrt.md) lists the exact package architectures, signed feed setup and update commands. Run xmtr as root on OpenWrt.
 
 ### Update and uninstall
 

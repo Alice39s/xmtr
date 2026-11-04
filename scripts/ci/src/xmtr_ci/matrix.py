@@ -1,13 +1,20 @@
 import json
 
+from xmtr_ci.openwrt import profiles
+from xmtr_ci.openwrt_vm import profiles as vm_profiles
 from xmtr_ci.targets import Builder, HostedSmoke, TermuxSmoke, targets
 
-TOOLS = {Builder.ZIGBUILD: "cargo-zigbuild", Builder.CROSS: "cross", Builder.NDK: "cargo-ndk"}
+TOOLS = {
+    Builder.ZIGBUILD: "cargo-zigbuild",
+    Builder.CROSS: "cross",
+    Builder.NDK: "cargo-ndk",
+    Builder.OPENWRT: "",
+}
 
 
 def apt_packages(smoke: HostedSmoke) -> str:
     if smoke.libs is None:
-        return ""
+        return "qemu-user" if smoke.qemu else ""
     return f"qemu-user libc6-{smoke.libs}-cross libgcc-s1-{smoke.libs}-cross"
 
 
@@ -28,5 +35,15 @@ def matrices() -> dict[str, str]:
     ]
     return {
         name: json.dumps({"include": include}, separators=(",", ":"))
-        for name, include in {"build": build, "smoke": smoke, "android": android}.items()
+        for name, include in {
+            "build": build,
+            "smoke": smoke,
+            "android": android,
+            "openwrt": [{"profile": case["id"], "target": case["triple"]} for case in profiles()],
+            "openwrt_vm": [
+                {"profile": case["id"], "target": case["triple"]}
+                for case in profiles()
+                if case["id"] in vm_profiles()
+            ],
+        }.items()
     }

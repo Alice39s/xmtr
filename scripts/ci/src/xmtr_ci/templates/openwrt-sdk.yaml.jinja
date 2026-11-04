@@ -1,0 +1,42 @@
+services:
+  sdk:
+    image: {{ image | tojson }}
+    pull_policy: never
+    user: {{ identity | tojson }}
+    entrypoint: ["/bin/sh"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 2
+    mem_limit: 1g
+    pids_limit: 128
+    tmpfs:
+      - /work:size=192m,mode=1777
+    environment:
+      TMPDIR: /work
+      SOURCE_DATE_EPOCH: {{ epoch | tojson }}
+      XMTR_BINARY: /input/xmtr
+      XMTR_VERSION: {{ version | tojson }}
+      XMTR_PACKAGE_ARCH: {{ case.arch | tojson }}
+      XMTR_OUTPUT: /output
+      XMTR_KEY_DIR: /output
+      XMTR_FEED_DIR: /output
+      XMTR_SIGNING_KEY: /keys/private
+      XMTR_PUBLIC_KEY: /keys/public
+    volumes:
+      - type: bind
+        source: {{ scripts | tojson }}
+        target: /scripts
+        read_only: true
+      - type: bind
+        source: {{ stage_input | tojson }}
+        target: /input
+        read_only: true
+      - type: bind
+        source: {{ keys | tojson }}
+        target: /keys
+        read_only: true
+      - type: bind
+        source: {{ output | tojson }}
+        target: /output

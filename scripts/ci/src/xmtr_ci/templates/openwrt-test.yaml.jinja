@@ -1,0 +1,58 @@
+services:
+  feed:
+    image: {{ case.sdk_config | tojson }}
+    pull_policy: never
+    user: {{ identity | tojson }}
+    entrypoint: ["/usr/bin/python3", "-m", "http.server", "8000", "--bind", "0.0.0.0", "--directory", "/feed"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 1
+    mem_limit: 192m
+    pids_limit: 64
+    tmpfs:
+      - /work:size=16m,mode=1777
+    environment:
+      TMPDIR: /work
+    healthcheck:
+      test: ["CMD", "/usr/bin/python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/publickey', timeout=2).read()"]
+      interval: 1s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - type: bind
+        source: {{ feed | tojson }}
+        target: /feed
+        read_only: true
+    networks: [test]
+  guest:
+    image: {{ image | tojson }}
+    platform: {{ platform | tojson }}
+    entrypoint: ["/bin/sh", "/fixture/test.sh"]
+    cap_drop: [ALL]
+    cap_add: [NET_RAW, CHOWN]
+    group_add: [{{ group | tojson }}]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 1
+    mem_limit: 384m
+    pids_limit: 64
+    tmpfs:
+      - /work:size=64m,mode=1777
+    environment:
+      DO_NOT_TRACK: "1"
+      TMPDIR: /work/tmp
+      XMTR_FORMAT: {{ case.format | tojson }}
+      XMTR_VERSION: {{ version | tojson }}
+      QEMU_CPU: {{ case.cpu | tojson }}
+    volumes:
+      - type: bind
+        source: {{ fixture | tojson }}
+        target: /fixture
+        read_only: true
+      - type: bind
+        source: {{ evidence | tojson }}
+        target: /evidence
+    networks: [test]
+networks:
+  test:
+    internal: true

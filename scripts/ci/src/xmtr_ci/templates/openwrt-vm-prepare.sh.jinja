@@ -1,0 +1,74 @@
+#!/bin/sh
+set -eu
+mkdir -p /root/xmtr-vm/tmp /root/xmtr-vm/default-feeds
+export TMPDIR=/root/xmtr-vm/tmp
+# shellcheck source=/dev/null
+. /etc/openwrt_release
+test "$DISTRIB_RELEASE" = '{{ case.release }}'
+test "$DISTRIB_ARCH" = '{{ case.arch }}'
+test "$(uname -m)" = '{{ vm.uname }}'
+test "$(uname -r)" = '{{ vm.kernel_release }}'
+cat /etc/openwrt_release > /root/xmtr-vm/release.txt
+uname -a > /root/xmtr-vm/kernel.txt
+attempt=0
+until ubus -S list network.interface.lan | grep -Fxq network.interface.lan; do
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 60
+    sleep 1
+done
+{% if case.format == 'ipk' %}
+opkg --version > /root/xmtr-vm/manager.txt
+opkg list-installed > /root/xmtr-vm/packages-before.txt
+opkg status > /root/xmtr-vm/dependencies-before.txt
+opkg --tmp-dir "$TMPDIR" --noaction remove --autoremove luci-ssl
+opkg --tmp-dir "$TMPDIR" remove --autoremove luci-ssl
+opkg --tmp-dir "$TMPDIR" --noaction remove --autoremove luci
+opkg --tmp-dir "$TMPDIR" remove --autoremove luci
+opkg --tmp-dir "$TMPDIR" remove uhttpd-mod-ubus uhttpd px5g-mbedtls
+opkg list-installed > /root/xmtr-vm/packages-after.txt
+test -z "$(opkg list-installed 'luci*')"
+for source in /etc/opkg/*.conf; do
+    [ ! -f "$source" ] || mv "$source" /root/xmtr-vm/default-feeds/
+done
+{% else %}
+apk --version > /root/xmtr-vm/manager.txt
+apk info --from installed > /root/xmtr-vm/packages-before.txt
+apk info --from installed --depends > /root/xmtr-vm/dependencies-before.txt
+apk --no-network del 'luci*' 'libluci*' 'uhttpd*' rpcd-mod-luci cgi-io px5g-mbedtls
+apk info --from installed > /root/xmtr-vm/packages-after.txt
+if apk info --from installed --exists luci-base; then
+    exit 1
+fi
+{% endif %}
+test ! -x /usr/sbin/uhttpd
+test -x /sbin/netifd
+test -x /usr/sbin/dnsmasq
+test -x /sbin/ubusd
+uci set network.lan.proto='dhcp'
+uci set network.lan.ip6assign='0'
+uci commit network
+uci set dhcp.lan.ignore='1'
+uci commit dhcp
+/etc/init.d/network reload
+/etc/init.d/dnsmasq restart
+attempt=0
+until ip -4 route show default | grep -Fq '10.0.2.2'; do
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 30
+    sleep 1
+done
+attempt=0
+until nslookup downloads.openwrt.org > /root/xmtr-vm/dns.txt 2>&1; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 30 ]; then
+        cat /root/xmtr-vm/dns.txt
+        exit 1
+    fi
+    sleep 1
+done
+{
+    ip -4 addr show
+    ip -4 route
+    ping -c 1 -W 3 127.0.0.1
+    cat /root/xmtr-vm/dns.txt
+} > /root/xmtr-vm/network.txt

@@ -75,6 +75,14 @@ fn manager_command(exe: &Path, exists: impl Fn(&Path) -> bool) -> Option<&'stati
     if path != "/usr/bin/xmtr" {
         return None;
     }
+    if exists(Path::new("/etc/openwrt_release")) {
+        if exists(Path::new("/etc/opkg.conf")) {
+            return Some("opkg update && opkg upgrade xmtr");
+        }
+        if exists(Path::new("/etc/apk/world")) {
+            return Some("apk update && apk upgrade xmtr");
+        }
+    }
     SYSTEM_PACKAGES
         .iter()
         .find(|(marker, _)| exists(Path::new(marker)))
@@ -285,6 +293,19 @@ mod tests {
         ] {
             assert_eq!(managed(path, &["/etc/debian_version"]), None, "{path}");
         }
+    }
+
+    #[test]
+    fn sends_openwrt_packages_to_the_firmware_package_manager() {
+        for (database, command) in [
+            ("/etc/opkg.conf", "opkg update && opkg upgrade xmtr"),
+            ("/etc/apk/world", "apk update && apk upgrade xmtr"),
+        ] {
+            let files = ["/etc/openwrt_release", database];
+            assert_eq!(managed("/usr/bin/xmtr", &files), Some(command));
+            assert_eq!(managed("/usr/local/bin/xmtr", &files), None);
+        }
+        assert_eq!(managed("/usr/bin/xmtr", &["/etc/openwrt_release"]), None);
     }
 
     #[test]

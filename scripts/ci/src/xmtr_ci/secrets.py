@@ -10,6 +10,8 @@ from pydantic_settings import BaseSettings
 class Secrets(BaseSettings):
     packages_gpg_key: SecretStr | None = None
     apk_signing_key: SecretStr | None = None
+    openwrt_usign_key: SecretStr | None = None
+    openwrt_apk_key: SecretStr | None = None
 
     @field_validator("*", mode="before")
     @classmethod

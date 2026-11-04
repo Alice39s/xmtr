@@ -81,6 +81,21 @@ builder = "zigbuild"
 smoke = { os = "ubuntu-latest" }
 
 [[target]]
+triple = "mips-unknown-linux-musl"
+builder = "openwrt"
+smoke = { os = "ubuntu-latest", qemu = "mips", cpu = "24Kc" }
+
+[[target]]
+triple = "mipsel-unknown-linux-musl"
+builder = "openwrt"
+smoke = { os = "ubuntu-latest", qemu = "mipsel", cpu = "24Kc" }
+
+[[target]]
+triple = "armv7-unknown-linux-musleabi"
+builder = "openwrt"
+smoke = { os = "ubuntu-latest", qemu = "arm", cpu = "cortex-a7,neon=off,vfp=off,vfp-d32=off" }
+
+[[target]]
 triple = "i686-unknown-linux-gnu"
 builder = "zigbuild"
 smoke = { os = "ubuntu-latest", qemu = "i386", libs = "i386", sysroot = "/usr/i686-linux-gnu" }
