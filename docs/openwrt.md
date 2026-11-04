@@ -6,7 +6,7 @@ The third-party repository is published with tagged xmtr releases at `https://al
 
 ## Architectures
 
-Use the architecture from `/etc/openwrt_release`, rather than the CPU name from `uname -m`.
+Use `DISTRIB_ARCH` from `/etc/openwrt_release` for opkg and `apk --print-arch` for APK v3.
 
 | OpenWrt package architecture | Binary target | Test filesystem |
 | --- | --- | --- |
@@ -39,15 +39,16 @@ Run these commands as root after the first tagged release containing the OpenWrt
 
 ```sh
 . /etc/openwrt_release
-uclient-fetch -q -O ./xmtr-usign.pub https://alice39s.github.io/xmtr/openwrt/xmtr-usign.pub
-opkg-key add ./xmtr-usign.pub
-printf 'option check_signature\nsrc/gz xmtr https://alice39s.github.io/xmtr/openwrt/24.10/ipk/%s\n' "$DISTRIB_ARCH" > /etc/opkg/xmtr.conf
-opkg update
+feed=https://alice39s.github.io/xmtr/openwrt
+
+uclient-fetch -O /tmp/xmtr.pub "$feed/xmtr-usign.pub" &&
+opkg-key add /tmp/xmtr.pub &&
+echo "src/gz xmtr $feed/24.10/ipk/$DISTRIB_ARCH" > /etc/opkg/xmtr.conf &&
+opkg update &&
 opkg install xmtr
-xmtr --version
 ```
 
-`/etc/opkg/xmtr.conf` names the feed and enables signature checking. `opkg-key add` installs the public key under its usign fingerprint.
+`/etc/opkg/xmtr.conf` names the feed. `opkg-key add` installs the public key under its usign fingerprint. Each `&&` runs the next step only if the previous step succeeds.
 
 ```sh
 opkg update
@@ -58,21 +59,22 @@ opkg remove xmtr
 ## OpenWrt 25.12: APK v3
 
 ```sh
-. /etc/openwrt_release
-uclient-fetch -q -O /etc/apk/keys/xmtr-apk.pem https://alice39s.github.io/xmtr/openwrt/xmtr-apk.pem
-printf 'https://alice39s.github.io/xmtr/openwrt/25.12/apk/%s/packages.adb\n' "$DISTRIB_ARCH" > /etc/apk/repositories.d/xmtr.list
-apk update
-apk add xmtr
-xmtr --version
+feed=https://alice39s.github.io/xmtr/openwrt
+
+uclient-fetch -O /etc/apk/keys/xmtr-apk.pem "$feed/xmtr-apk.pem" &&
+echo "$feed/25.12/apk/$(apk --print-arch)/packages.adb" > /etc/apk/repositories.d/xmtr.list &&
+apk -U add xmtr
 ```
 
-The repository contains a signed `packages.adb` index and signed APK v3 packages. It is separate from the Alpine repository.
+The repository contains a signed `packages.adb` index and signed APK v3 packages. It is separate from the Alpine repository. `apk -U add` refreshes the index before installing xmtr.
 
 ```sh
 apk update
 apk upgrade xmtr
 apk del xmtr
 ```
+
+After installation, check the version with `xmtr --version`.
 
 ## Release files
 
