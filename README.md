@@ -189,7 +189,7 @@ A run has five steps, numbered the same way in the progress panel.
 
    With `--protocol auto`, a target that ICMP has not reached after 4 rounds is also traced over TCP port 80, or over UDP with unprivileged sockets. The second route runs beside the ICMP route, gets its own row in the progress view and counts toward `-j`; an ICMP route that ends sooner without the target starts it when it ends. Both routes are uploaded. A route where no hop answered is reported as an error and left out.
 
-   UDP over raw sockets traces the Paris way: every probe of a round has the same ports and UDP checksum, so a router that spreads flows over parallel links sends the whole round down one of them, and each round shows one real path. ICMP, TCP and UDP over unprivileged sockets send classic probes.
+   UDP over raw sockets uses Dublin traceroute: each round keeps both ports fixed to follow one flow through routers that balance traffic by flow, and replies can be matched after NAT changes the UDP checksum. ICMP, TCP and UDP over unprivileged sockets send classic probes.
 3. **Lookup.** Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. The step ends after 5 seconds at the latest, and the result notes how many addresses did not answer. Private addresses are never sent to a resolver given with `--dns`. `--no-rdns` skips this step.
 4. **Upload.** The routes are uploaded to `--api`; see [Upload and sharing](#upload-and-sharing). `--no-upload` skips this step.
 5. **Result.** The IPMap link, any notes, and one table per route.

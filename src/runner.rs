@@ -92,12 +92,13 @@ fn tracer_rounds(settings: &Settings) -> usize {
 
 /// Classic UDP probes change the destination port with every probe, so a router that balances
 /// flows over parallel links sends each hop's probe down a different link and the route mixes
-/// hops of several paths. Paris traceroute keeps every probe of a round on one flow, and tells the
-/// probes apart by a UDP checksum that it sets through the payload, which needs raw sockets.
+/// hops of several paths. Dublin keeps every probe of a round on one flow and identifies probes
+/// by the IPv4 identifier or the IPv6 payload length, so NAT checksum changes do not hide replies.
+/// Setting those fields needs raw sockets.
 /// trippy has no flow-stable mode for ICMP or TCP.
 const fn multipath_strategy(protocol: Protocol, privilege: PrivilegeMode) -> MultipathStrategy {
     match (protocol, privilege) {
-        (Protocol::Udp, PrivilegeMode::Privileged) => MultipathStrategy::Paris,
+        (Protocol::Udp, PrivilegeMode::Privileged) => MultipathStrategy::Dublin,
         _ => MultipathStrategy::Classic,
     }
 }
@@ -621,12 +622,12 @@ mod tests {
     }
 
     #[test]
-    fn holds_the_udp_flow_only_with_raw_sockets() {
+    fn uses_nat_compatible_flow_stable_udp_only_with_raw_sockets() {
         for (protocol, privilege, strategy) in [
             (
                 Protocol::Udp,
                 PrivilegeMode::Privileged,
-                MultipathStrategy::Paris,
+                MultipathStrategy::Dublin,
             ),
             (
                 Protocol::Udp,
@@ -645,6 +646,35 @@ mod tests {
             ),
         ] {
             assert_eq!(multipath_strategy(protocol, privilege), strategy);
+        }
+    }
+
+    #[test]
+    fn udp_tracers_keep_their_source_ports_and_sequence_ranges_in_both_families() {
+        let settings = settings(Duration::from_secs(45), Duration::from_secs(1));
+        let probe = Probe {
+            job: 0,
+            protocol: Protocol::Udp,
+            fallback: false,
+            row: 0,
+        };
+        for target in ["192.0.2.1", "2001:db8::1"] {
+            let job = job(target, None);
+            for (slot, source_port, sequence) in [
+                (0, 41000, 33434),
+                (1, 41001, 34970),
+                (19, 41019, 62618),
+                (20, 41020, 33434),
+                (999, 41999, 62618),
+            ] {
+                let tracer = build_tracer(&job, &probe, slot, &settings).unwrap();
+                assert_eq!(tracer.multipath_strategy(), MultipathStrategy::Dublin);
+                assert_eq!(
+                    tracer.port_direction(),
+                    PortDirection::FixedSrc(Port(source_port))
+                );
+                assert_eq!(tracer.initial_sequence().0, sequence);
+            }
         }
     }
 
