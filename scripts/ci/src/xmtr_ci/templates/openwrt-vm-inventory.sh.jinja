@@ -2,12 +2,6 @@
 set -eu
 mkdir -p /root/xmtr-vm/tmp /root/xmtr-vm/default-feeds
 export TMPDIR=/root/xmtr-vm/tmp
-attempt=0
-until ubus -S list network.interface.lan | grep -Fxq network.interface.lan; do
-    attempt=$((attempt + 1))
-    test "$attempt" -lt 60
-    sleep 1
-done
 # shellcheck source=/dev/null
 . /etc/openwrt_release
 cat /etc/openwrt_release > /root/xmtr-vm/release.txt

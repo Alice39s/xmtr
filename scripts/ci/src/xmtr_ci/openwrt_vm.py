@@ -62,6 +62,13 @@ def expired(_signum: int, _frame: FrameType | None) -> NoReturn:
     raise TimeoutError(f"OpenWrt VM test exceeded {TOTAL_SECONDS} seconds")
 
 
+def remaining(until: float, phase: str) -> float:
+    seconds = until - time.monotonic()
+    if seconds <= 0:
+        raise TimeoutError(f"{phase} exceeded its deadline")
+    return seconds
+
+
 @contextmanager
 def deadline() -> Generator[None]:
     if signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0):
@@ -310,6 +317,7 @@ def boot(
         "-no-reboot",
     ]
     log = stack.enter_context((evidence / "serial.log").open("w"))
+    until = time.monotonic() + BOOT_SECONDS
     child = pexpect.spawn(binary, args[1:], encoding="utf-8", timeout=BOOT_SECONDS)
     tty.setraw(child.child_fd)
     if child.pid is None:
@@ -318,15 +326,32 @@ def boot(
     record = evidence / "qemu-owner.json"
     process_owner(child.pid, args, owner, record)
     stack.callback(stop_vm, child, record, owner)
-    login(child, vm)
-    child.sendline("stty -echo")
-    child.expect(r"root@[^:\r\n]+:[^\r\n]*# ")
-    child.sendline(f"export PS1={shlex.quote(PROMPT)}")
-    child.expect_exact(PROMPT)
+    phase = f"{vm['id']}: boot console login"
+    try:
+        login(child, vm, until=until)
+        phase = f"{vm['id']}: boot console setup"
+        child.sendline("stty -echo")
+        child.expect(r"root@[^:\r\n]+:[^\r\n]*# ", timeout=remaining(until, phase))
+        child.sendline(f"export PS1={shlex.quote(PROMPT)}")
+        child.expect_exact(PROMPT, timeout=remaining(until, phase))
+    except pexpect.TIMEOUT as error:
+        raise TimeoutError(f"{phase}: {error}") from error
+    phase = f"{vm['id']}: boot waiting for network.interface.lan"
+    # Keep time for the serial completion frame inside the same boot budget.
+    rpc_seconds = int(remaining(until, phase)) - 1
+    if rpc_seconds < 1:
+        raise TimeoutError(f"{phase}: no time remains for the readiness RPC")
+    command(
+        child,
+        f"ubus -t {rpc_seconds} wait_for network.interface.lan",
+        until=until,
+        phase=phase,
+    )
     return child
 
 
-def login(child: pexpect.spawn, vm: dict[str, str]) -> None:
+def login(child: pexpect.spawn, vm: dict[str, str], *, until: float) -> None:
+    phase = f"{vm['id']}: console login"
     prompt = r"root@[^:\r\n]+:[^\r\n]*# "
     state = child.expect(
         [
@@ -334,11 +359,11 @@ def login(child: pexpect.spawn, vm: dict[str, str]) -> None:
             r"Please press Enter to activate this console\.",
             r"login: ?$",
         ],
-        timeout=BOOT_SECONDS,
+        timeout=remaining(until, phase),
     )
     if state == 1:
         child.sendline("")
-        state = child.expect([prompt, r"login: ?$"], timeout=BOOT_SECONDS)
+        state = child.expect([prompt, r"login: ?$"], timeout=remaining(until, phase))
         if state == 0:
             return
     elif state == 0:
@@ -346,12 +371,14 @@ def login(child: pexpect.spawn, vm: dict[str, str]) -> None:
     if vm["console_login"] != "password":
         raise RuntimeError(f"{vm['id']}: firmware requested an undocumented console login")
     child.sendline(vm["console_user"])
-    child.expect_exact("Password:", timeout=30)
+    child.expect_exact("Password:", timeout=min(30, remaining(until, phase)))
     log = child.logfile
     child.logfile = None
     child.sendline(vm["console_password"])
     child.logfile = log
-    state = child.expect([prompt, "Login incorrect", r"login: ?$"], timeout=30)
+    state = child.expect(
+        [prompt, "Login incorrect", r"login: ?$"], timeout=min(30, remaining(until, phase))
+    )
     if state != 0:
         raise RuntimeError(f"{vm['id']}: documented console credentials were rejected")
 
@@ -363,18 +390,30 @@ def serial_frame(script: str, begin: str, end: str) -> str:
     )
 
 
-def command(child: pexpect.spawn, script: str, *, timeout: int = STEP_SECONDS) -> str:
+def command(
+    child: pexpect.spawn,
+    script: str,
+    *,
+    timeout: float = STEP_SECONDS,
+    until: float | None = None,
+    phase: str = "Guest command",
+) -> str:
+    if until is None:
+        until = time.monotonic() + timeout
     begin, end = (f"__XMTR_{uuid.uuid4().hex}__" for _ in range(2))
-    child.sendline(serial_frame(script, begin, end))
-    child.expect(begin + r"\r*\n", timeout=timeout)
-    child.expect(end + r"([0-9]+)\r*\n", timeout=timeout)
-    if not isinstance(child.before, str) or child.match is None:
-        raise RuntimeError("Guest completion marker did not produce a decoded result")
-    result = child.before.replace("\r", "")
-    status = int(child.match.group(1))
-    child.expect_exact(PROMPT, timeout=timeout)
+    try:
+        child.sendline(serial_frame(script, begin, end))
+        child.expect(begin + r"\r*\n", timeout=remaining(until, phase))
+        child.expect(end + r"([0-9]+)\r*\n", timeout=remaining(until, phase))
+        if not isinstance(child.before, str) or child.match is None:
+            raise RuntimeError(f"{phase}: completion marker did not produce a decoded result")
+        result = child.before.replace("\r", "")
+        status = int(child.match.group(1))
+        child.expect_exact(PROMPT, timeout=remaining(until, phase))
+    except pexpect.TIMEOUT as error:
+        raise TimeoutError(f"{phase}: {error}") from error
     if status:
-        raise RuntimeError(f"Guest command returned {status}: {script}\n{result}")
+        raise RuntimeError(f"{phase} returned {status}: {script}\n{result}")
     return result
 
 
