@@ -23,10 +23,18 @@ for path in "$XMTR_FEED_DIR" "$XMTR_SIGNING_KEY" "$XMTR_PUBLIC_KEY" "$TMPDIR"; d
 	esac
 done
 
-[ -d "$XMTR_FEED_DIR" ] && [ -w "$XMTR_FEED_DIR" ] || fail "feed directory is not writable: $XMTR_FEED_DIR"
-[ -f "$XMTR_SIGNING_KEY" ] && [ -r "$XMTR_SIGNING_KEY" ] || fail "cannot read the signing key: $XMTR_SIGNING_KEY"
-[ -f "$XMTR_PUBLIC_KEY" ] && [ -r "$XMTR_PUBLIC_KEY" ] || fail "cannot read the public key: $XMTR_PUBLIC_KEY"
-[ -d "$TMPDIR" ] && [ -w "$TMPDIR" ] || fail "build directory is not writable: $TMPDIR"
+if [ ! -d "$XMTR_FEED_DIR" ] || [ ! -w "$XMTR_FEED_DIR" ]; then
+	fail "feed directory is not writable: $XMTR_FEED_DIR"
+fi
+if [ ! -f "$XMTR_SIGNING_KEY" ] || [ ! -r "$XMTR_SIGNING_KEY" ]; then
+	fail "cannot read the signing key: $XMTR_SIGNING_KEY"
+fi
+if [ ! -f "$XMTR_PUBLIC_KEY" ] || [ ! -r "$XMTR_PUBLIC_KEY" ]; then
+	fail "cannot read the public key: $XMTR_PUBLIC_KEY"
+fi
+if [ ! -d "$TMPDIR" ] || [ ! -w "$TMPDIR" ]; then
+	fail "build directory is not writable: $TMPDIR"
+fi
 
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
 export SOURCE_DATE_EPOCH
@@ -38,7 +46,9 @@ ipk)
 	[ -f "$1" ] || fail "no ipk packages in $XMTR_FEED_DIR"
 	index=/builder/scripts/ipkg-make-index.sh
 	usign=/builder/staging_dir/host/bin/usign
-	[ -x "$index" ] && [ -x "$usign" ] || fail 'SDK ipk index tools are missing'
+	if [ ! -x "$index" ] || [ ! -x "$usign" ]; then
+		fail 'SDK ipk index tools are missing'
+	fi
 	MKHASH=/builder/staging_dir/host/bin/mkhash
 	export MKHASH
 	/bin/bash -o pipefail "$index" . > Packages
