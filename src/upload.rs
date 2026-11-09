@@ -148,8 +148,9 @@ fn gateway_addrs(uri: &Uri, dns: &Dns) -> Result<Vec<SocketAddr>> {
         .collect())
 }
 
-/// Gateway text with control characters replaced, so a reply cannot send escape sequences to the terminal.
-fn printable(text: &str) -> String {
+/// Text with control characters replaced, so a gateway reply or a pasted link cannot send escape
+/// sequences to the terminal.
+pub fn printable(text: &str) -> String {
     text.chars()
         .map(|c| {
             if c.is_control() {
@@ -224,9 +225,10 @@ fn reason(response: &mut Response<Body>) -> String {
 /// Deletes trace `id` from the gateway at `api` with its admin key. Returns false when the gateway
 /// has no such trace.
 pub fn delete(agent: &Agent, api: &str, id: &str, admin_key: &str) -> Result<bool> {
-    let mut url = Url::parse(api).with_context(|| format!("reading the gateway address {api}"))?;
+    let mut url = Url::parse(api)
+        .with_context(|| format!("reading the gateway address {}", printable(api)))?;
     url.path_segments_mut()
-        .map_err(|()| anyhow!("the gateway address {api} cannot hold a path"))?
+        .map_err(|()| anyhow!("the gateway address {} cannot hold a path", printable(api)))?
         .pop_if_empty()
         .extend(["api", "v1", "traces", id]);
     let mut response = agent

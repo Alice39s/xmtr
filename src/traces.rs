@@ -6,9 +6,11 @@ pub mod store;
 
 use std::fmt::{self, Display};
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
+use regex::Regex;
 use ureq::Agent;
 use url::Url;
 
@@ -16,7 +18,7 @@ use self::store::Record;
 use crate::cli::{DeleteArgs, TracesArgs, TracesCommand};
 use crate::model::UploadAccepted;
 use crate::output::Stdout;
-use crate::upload;
+use crate::upload::{self, printable};
 
 /// Labels in front of trace details are padded to the width of `trace-id`, so the values line up.
 const LABEL_WIDTH: usize = 8;
@@ -147,34 +149,49 @@ struct Named {
     admin_key: Option<String>,
 }
 
+/// A trace ID as the gateway issues it: a snowflake ID and an 8-letter view key.
+static TRACE_ID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{1,20}-[A-Za-z]{8}$").expect("the pattern is valid"));
+
 /// Reads a trace ID, an IPMap link such as `https://xmsl.dev/xmtr/<ID>`, or a link with
-/// `trace-id` and `admin-key` parameters such as the admin link.
+/// `trace-id` and `admin-key` parameters such as the admin link; a link may leave out
+/// `https://`. The error does not repeat `trace`, which may hold an admin key.
 fn named(trace: &str) -> Result<Named> {
-    let link = match Url::parse(trace) {
-        Ok(link) if matches!(link.scheme(), "http" | "https") => link,
-        _ => {
-            return Ok(Named {
-                id: trace.to_owned(),
-                admin_key: None,
-            });
-        }
+    const UNKNOWN: &str = "TRACE is not a trace ID, IPMap link or admin link";
+    if TRACE_ID.is_match(trace) {
+        return Ok(Named {
+            id: trace.to_owned(),
+            admin_key: None,
+        });
+    }
+    let link = if trace.contains("://") {
+        Url::parse(trace)
+    } else {
+        Url::parse(&format!("https://{trace}"))
+    };
+    let Some(link) = link
+        .ok()
+        .filter(|link| matches!(link.scheme(), "http" | "https"))
+    else {
+        bail!(UNKNOWN);
     };
     let parameter = |name: &str| {
         link.query_pairs()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.into_owned())
     };
-    let id = parameter("trace-id")
-        .or_else(|| {
-            link.path_segments()
-                .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
-                .map(str::to_owned)
-        })
-        .context("the link names no trace")?;
-    Ok(Named {
-        id,
-        admin_key: parameter("admin-key"),
-    })
+    let id = parameter("trace-id").or_else(|| {
+        link.path_segments()
+            .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
+            .map(str::to_owned)
+    });
+    match id {
+        Some(id) if TRACE_ID.is_match(&id) => Ok(Named {
+            id,
+            admin_key: parameter("admin-key"),
+        }),
+        _ => bail!(UNKNOWN),
+    }
 }
 
 /// What `xmtr traces delete` did.
@@ -248,7 +265,11 @@ fn delete(agent: &Agent, path: &Path, args: &DeleteArgs, api: &str) -> Result<De
             )
         })?;
     if !on_gateway && !listed {
-        bail!("the gateway at {api} has no trace {}", named.id);
+        bail!(
+            "the gateway at {} has no trace {}",
+            printable(api),
+            named.id
+        );
     }
     Ok(Deletion {
         id: named.id,
@@ -366,14 +387,42 @@ https://xmsl.dev/xmtr/1-a",
             named(&format!("https://xmsl.dev/ipmap?plat=xmtr&trace-id={ID}")).unwrap(),
             id(ID)
         );
+        let admin = Named {
+            id: ID.to_owned(),
+            admin_key: Some(KEY.to_owned()),
+        };
         assert_eq!(
             named(accepted().admin_url.as_deref().unwrap()).unwrap(),
-            Named {
-                id: ID.to_owned(),
-                admin_key: Some(KEY.to_owned()),
-            }
+            admin
         );
-        assert!(named("https://xmsl.dev").is_err());
+        assert_eq!(
+            named(&format!(
+                "xmsl.dev/ipmap?plat=xmtr&trace-id={ID}&admin-key={KEY}"
+            ))
+            .unwrap(),
+            admin
+        );
+        assert_eq!(named(&format!("xmsl.dev/xmtr/{ID}")).unwrap(), id(ID));
+    }
+
+    #[test]
+    fn rejects_other_input_without_repeating_it() {
+        for trace in [
+            "https://xmsl.dev".to_owned(),
+            "1-a".to_owned(),
+            String::new(),
+            "..".to_owned(),
+            KEY.to_owned(),
+            format!("xmsl.dev/ipmap?plat=xmtr&trace-id=1-a&admin-key={KEY}"),
+            format!("https://xmsl.dev/ipmap?trace-id=%1b%5b31mX&admin-key={KEY}"),
+            format!("ftp://xmsl.dev/xmtr/{ID}"),
+        ] {
+            let error = named(&trace).unwrap_err().to_string();
+            assert_eq!(
+                error, "TRACE is not a trace ID, IPMap link or admin link",
+                "{trace}"
+            );
+        }
     }
 
     /// Answers one request on a port of this machine with `status` and a problem `body`, and
@@ -491,14 +540,15 @@ https://xmsl.dev/xmtr/1-a",
         let error = delete(
             &upload::direct_agent(),
             &path,
-            &delete_args(ID, Some(KEY), Some(&api)),
+            &delete_args(ID, Some(KEY), Some(&format!("{api}/\u{1b}[2J"))),
             &api,
         )
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            format!("the gateway at {api} has no trace {ID}")
+            format!("the gateway at {api}/\u{fffd}[2J has no trace {ID}")
         );
+        assert!(!format!("{error:#}").contains(KEY));
         server.join().unwrap();
     }
 
