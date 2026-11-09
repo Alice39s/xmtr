@@ -294,7 +294,7 @@ xmtr 會把每次上傳記到本機的列表裡，包括時間、目標、閘道
 | macOS | `~/Library/Application Support/xmtr/traces.jsonl` |
 | Windows | `%APPDATA%\xmtr\traces.jsonl` |
 
-在 Unix 上只有你自己的使用者能讀這個檔案。大多數 Linux 發行版的 `sudo` 會把 `HOME` 設成 root 的主目錄，所以 `sudo xmtr` 的上傳記在 root 的列表裡，要用 `sudo xmtr traces` 檢視。macOS 的 `sudo` 保留 `HOME`，列表仍歸你的使用者。列表寫入失敗時，這次執行會輸出一條備註，退出碼不變。
+在 Unix 上只有你自己的使用者能讀這個檔案。`sudo xmtr` 的上傳記在 root 的列表裡，用 `sudo xmtr traces` 檢視：以 root 執行時，xmtr 從使用者資料庫讀取 root 的主目錄，不使用 `HOME` 和 `XDG_DATA_HOME`。列表寫入失敗時，這次執行會輸出一條備註，退出碼不變。
 
 ```sh
 xmtr traces                      # 列出上傳記錄，新的在前，附帶連結和刪除命令

@@ -3535,6 +3535,7 @@ dependencies = [
  "dirs",
  "hickory-resolver",
  "humantime",
+ "libc",
  "os_info",
  "ratatui",
  "regex",
