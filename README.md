@@ -302,7 +302,7 @@ xmtr traces --json               # the complete records
 xmtr traces delete <TRACE>       # delete the trace from the gateway and from the list
 ```
 
-`<TRACE>` is a trace ID, an IPMap link or an admin link. The admin key comes from `--admin-key`, the admin link or the list, in that order, and the gateway from `--api`, the list, `XMTR_API` or the default gateway. A trace the gateway no longer has is removed from the list as well.
+`<TRACE>` is a trace ID, an IPMap link or an admin link. The admin key comes from `--admin-key`, the admin link or the list, in that order, and the gateway from `--api`, the list, `XMTR_API` or the default gateway. A trace the gateway no longer has, which it answers with HTTP 404 and an `application/problem+json` body, is removed from the list as well; any other 404 keeps the trace in the list.
 
 ### DNS
 
