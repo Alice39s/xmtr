@@ -302,7 +302,7 @@ xmtr traces --json               # 輸出完整記錄
 xmtr traces delete <TRACE>       # 從閘道器和列表中刪除這條記錄
 ```
 
-`<TRACE>` 可以是 trace ID、IPMap 連結或管理連結。admin key 依次取自 `--admin-key`、管理連結和列表；閘道器依次取自 `--api`、列表、`XMTR_API` 和預設閘道器。閘道器上已經沒有的記錄也會從列表中移除。
+`<TRACE>` 可以是 trace ID、IPMap 連結或管理連結。admin key 依次取自 `--admin-key`、管理連結和列表；閘道器依次取自 `--api`、列表、`XMTR_API` 和預設閘道器。閘道器上已經沒有的記錄（閘道器以 HTTP 404 和 `application/problem+json` 響應體回應）也會從列表中移除；其他 404 響應不會移除列表裡的記錄。
 
 ### DNS
 

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use ureq::config::{Config, ConfigBuilder};
+use ureq::http::header::CONTENT_TYPE;
 use ureq::http::{Response, StatusCode, Uri};
 use ureq::typestate::AgentScope;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
@@ -222,8 +223,24 @@ fn reason(response: &mut Response<Body>) -> String {
         })
 }
 
+/// True when the response body is an RFC 9457 problem document.
+fn is_problem(response: &Response<Body>) -> bool {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| {
+            media
+                .trim()
+                .eq_ignore_ascii_case("application/problem+json")
+        })
+}
+
 /// Deletes trace `id` from the gateway at `api` with its admin key. Returns false when the gateway
-/// has no such trace.
+/// has no such trace: it answers that with 404 and a problem document, while a 404 without one
+/// comes from another server, such as one `--api` names by mistake, and says nothing about the
+/// trace.
 pub fn delete(agent: &Agent, api: &str, id: &str, admin_key: &str) -> Result<bool> {
     let mut url = Url::parse(api)
         .with_context(|| format!("reading the gateway address {}", printable(api)))?;
@@ -238,7 +255,7 @@ pub fn delete(agent: &Agent, api: &str, id: &str, admin_key: &str) -> Result<boo
         .with_context(|| format!("deleting {url}"))?;
     match response.status() {
         status if status.is_success() => Ok(true),
-        StatusCode::NOT_FOUND => Ok(false),
+        StatusCode::NOT_FOUND if is_problem(&response) => Ok(false),
         status => bail!(
             "deletion rejected with HTTP {}: {}",
             status.as_u16(),

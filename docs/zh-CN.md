@@ -302,7 +302,7 @@ xmtr traces --json               # 输出完整记录
 xmtr traces delete <TRACE>       # 从网关和列表中删除这条记录
 ```
 
-`<TRACE>` 可以是 trace ID、IPMap 链接或管理链接。admin key 依次取自 `--admin-key`、管理链接和列表；网关依次取自 `--api`、列表、`XMTR_API` 和默认网关。网关上已经没有的记录也会从列表中移除。
+`<TRACE>` 可以是 trace ID、IPMap 链接或管理链接。admin key 依次取自 `--admin-key`、管理链接和列表；网关依次取自 `--api`、列表、`XMTR_API` 和默认网关。网关上已经没有的记录（网关以 HTTP 404 和 `application/problem+json` 响应体回应）也会从列表中移除；其他 404 响应不会移除列表里的记录。
 
 ### DNS
 

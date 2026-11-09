@@ -430,10 +430,16 @@ https://xmsl.dev/xmtr/1-a",
     /// Answers one request on a port of this machine with `status` and a problem `body`, and
     /// returns the gateway address and the request head.
     fn gateway(status: &str, body: &str) -> (String, JoinHandle<String>) {
+        server(status, "application/problem+json", body)
+    }
+
+    /// Answers one request on a port of this machine with `status` and a `body` of
+    /// `content_type`, and returns the server address and the request head.
+    fn server(status: &str, content_type: &str, body: &str) -> (String, JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let api = format!("http://{}", listener.local_addr().unwrap());
         let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         let server = thread::spawn(move || {
@@ -551,6 +557,44 @@ https://xmsl.dev/xmtr/1-a",
             format!("the gateway at {api}/\u{fffd}[2J has no trace {ID}")
         );
         assert!(!format!("{error:#}").contains(KEY));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_404_from_another_server_keeps_the_trace_listed() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        store::append(&path, &record(ID)).unwrap();
+        for content_type in ["text/plain; charset=UTF-8", "text/html"] {
+            let (api, server) = server("404 Not Found", content_type, "404 Not Found");
+            let error = delete(
+                &upload::direct_agent(),
+                &path,
+                &delete_args(ID, None, Some(&api)),
+                &api,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "deletion rejected with HTTP 404: Not Found"
+            );
+            server.join().unwrap();
+        }
+        assert_eq!(store::read(&path).unwrap().records, [record(ID)]);
+
+        let (api, server) = server(
+            "404 Not Found",
+            "Application/Problem+JSON; charset=utf-8",
+            r#"{"title":"Not Found"}"#,
+        );
+        let deletion = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(ID, None, Some(&api)),
+            &api,
+        )
+        .unwrap();
+        assert!(!deletion.on_gateway && deletion.listed);
         server.join().unwrap();
     }
 
