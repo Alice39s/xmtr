@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -25,6 +25,18 @@ pub struct Record {
     pub api: String,
     /// The targets as given on the command line.
     pub targets: Vec<String>,
+}
+
+/// What the list holds: the records, oldest first, and the numbers of the lines that hold none.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct List {
+    pub records: Vec<Record>,
+    pub unreadable: Vec<usize>,
+}
+
+/// The record on `line`, if it holds one.
+fn parse(line: &str) -> Option<Record> {
+    serde_json::from_str(line).ok()
 }
 
 /// `xmtr/traces.jsonl` in the data directory of the user xmtr runs as.
@@ -145,51 +157,76 @@ fn line(record: &Record) -> String {
     line
 }
 
-/// Adds `record` to the end of the list at `path`, creating the file and its directory.
+/// Adds `record` to the end of the list at `path`, creating the file and its directory. A last
+/// line cut short, such as by a full disk, is ended first so the record gets its own line.
 pub fn append(path: &Path, record: &Record) -> Result<()> {
     let dir = directory(path);
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let _lock = lock(path)?;
-    private_file()
+    let mut file = private_file()
+        .read(true)
         .append(true)
         .open(path)
-        .and_then(|mut file| file.write_all(line(record).as_bytes()))
+        .with_context(|| format!("opening {}", path.display()))?;
+    let mut text = String::new();
+    if ends_inside_a_line(&mut file).with_context(|| format!("reading {}", path.display()))? {
+        text.push('\n');
+    }
+    text.push_str(&line(record));
+    file.write_all(text.as_bytes())
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// The records in the list at `path`, oldest first; none when the file does not exist yet.
-pub fn read(path: &Path) -> Result<Vec<Record>> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
-    text.lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(index, line)| {
-            serde_json::from_str(line)
-                .with_context(|| format!("reading {} line {}", path.display(), index + 1))
-        })
-        .collect()
+/// True when `file` is not empty and its last byte is not a line break.
+fn ends_inside_a_line(file: &mut File) -> io::Result<bool> {
+    if file.metadata()?.len() == 0 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0];
+    file.read_exact(&mut last)?;
+    Ok(last != *b"\n")
 }
 
-/// Removes trace `id` from the list at `path`; false when the list does not hold it. The list is
-/// written to a new file that then replaces the old one, so an interrupted write loses nothing.
+/// The list at `path`; empty when the file does not exist yet.
+pub fn read(path: &Path) -> Result<List> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(List::default()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut list = List::default();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse(line) {
+            Some(record) => list.records.push(record),
+            None => list.unreadable.push(index + 1),
+        }
+    }
+    Ok(list)
+}
+
+/// Removes trace `id` from the list at `path`; false when the list does not hold it. Every other
+/// line stays as it is, including lines that hold no record. The list is written to a new file that
+/// then replaces the old one, so an interrupted write loses nothing.
 pub fn remove(path: &Path, id: &str) -> Result<bool> {
     if !fs::exists(path).with_context(|| format!("reading {}", path.display()))? {
         return Ok(false);
     }
     let _lock = lock(path)?;
-    let records = read(path)?;
-    let kept: Vec<&Record> = records
+    let old = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let lines: Vec<&str> = old.lines().filter(|line| !line.trim().is_empty()).collect();
+    let kept: Vec<&str> = lines
         .iter()
-        .filter(|record| record.trace.id != id)
+        .copied()
+        .filter(|line| parse(line).is_none_or(|record| record.trace.id != id))
         .collect();
-    if kept.len() == records.len() {
+    if kept.len() == lines.len() {
         return Ok(false);
     }
-    let text: String = kept.into_iter().map(line).collect();
+    let text: String = kept.into_iter().map(|line| format!("{line}\n")).collect();
     let dir = directory(path);
     let mut file = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("creating a new list in {}", dir.display()))?;
@@ -255,10 +292,16 @@ pub mod tests {
     fn appends_records_and_reads_them_back_in_order() {
         let dir = scratch();
         let path = dir.path().join("xmtr").join("traces.jsonl");
-        assert_eq!(read(&path).unwrap(), []);
+        assert_eq!(read(&path).unwrap(), List::default());
         append(&path, &record(ID)).unwrap();
         append(&path, &record("2-b")).unwrap();
-        assert_eq!(read(&path).unwrap(), [record(ID), record("2-b")]);
+        assert_eq!(
+            read(&path).unwrap(),
+            List {
+                records: vec![record(ID), record("2-b")],
+                unreadable: Vec::new(),
+            }
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -306,9 +349,10 @@ pub mod tests {
             append(&path, &record(id)).unwrap();
         }
         assert!(remove(&path, ID).unwrap());
-        assert_eq!(read(&path).unwrap(), [record("1-a"), record("3-c")]);
+        assert_eq!(read(&path).unwrap().records, [record("1-a"), record("3-c")]);
         assert!(!remove(&path, ID).unwrap());
-        assert_eq!(read(&path).unwrap(), [record("1-a"), record("3-c")]);
+        assert_eq!(read(&path).unwrap().records, [record("1-a"), record("3-c")]);
+        assert!(!remove(&dir.path().join("missing.jsonl"), ID).unwrap());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -339,6 +383,7 @@ pub mod tests {
         adder.join().unwrap();
         let ids: Vec<String> = read(&path)
             .unwrap()
+            .records
             .into_iter()
             .map(|record| record.trace.id)
             .collect();
@@ -346,7 +391,7 @@ pub mod tests {
     }
 
     #[test]
-    fn names_the_line_it_cannot_read() {
+    fn skips_unreadable_lines_and_keeps_them_on_removal() {
         let dir = scratch();
         let path = dir.path().join("traces.jsonl");
         append(&path, &record(ID)).unwrap();
@@ -356,8 +401,35 @@ pub mod tests {
             .unwrap()
             .write_all(b"\n{not json\n")
             .unwrap();
-        let error = format!("{:#}", read(&path).unwrap_err());
-        assert!(error.contains("traces.jsonl line 3"), "{error}");
+        append(&path, &record("3-c")).unwrap();
+        assert_eq!(
+            read(&path).unwrap(),
+            List {
+                records: vec![record(ID), record("3-c")],
+                unreadable: vec![3],
+            }
+        );
+        assert!(remove(&path, ID).unwrap());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{{not json\n{}", line(&record("3-c")))
+        );
+    }
+
+    #[test]
+    fn ends_a_cut_line_before_adding_a_record() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let cut = line(&record("1-a"));
+        fs::write(&path, &cut[..cut.len() / 2]).unwrap();
+        append(&path, &record(ID)).unwrap();
+        assert_eq!(
+            read(&path).unwrap(),
+            List {
+                records: vec![record(ID)],
+                unreadable: vec![1],
+            }
+        );
     }
 
     #[test]
@@ -369,7 +441,7 @@ pub mod tests {
             r#"{"id":"1-a","pin":false,"url":"https://xmsl.dev/xmtr/1-a","uploadedAt":"2026-11-09T04:12:33Z","api":"https://stage-info-api.xmsl.dev","targets":["1.1.1.1"]}"#,
         )
         .unwrap();
-        let records = read(&path).unwrap();
+        let records = read(&path).unwrap().records;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].trace.admin_key, None);
     }
