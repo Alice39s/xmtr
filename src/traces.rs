@@ -154,9 +154,9 @@ struct Named {
     admin_key: Option<String>,
 }
 
-/// A trace ID as the gateway issues it: a snowflake ID and an 8-letter view key.
+/// A trace ID as the gateway issues it: a snowflake ID in ASCII digits and an 8-letter view key.
 static TRACE_ID: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{1,20}-[A-Za-z]{8}$").expect("the pattern is valid"));
+    LazyLock::new(|| Regex::new(r"^[0-9]{1,20}-[A-Za-z]{8}$").expect("the pattern is valid"));
 
 /// Reads a trace ID, an IPMap link such as `https://xmsl.dev/xmtr/<ID>`, or a link with
 /// `trace-id` and `admin-key` parameters such as the admin link; a link may leave out
@@ -426,6 +426,10 @@ https://xmsl.dev/xmtr/1-a",
             format!("xmsl.dev/ipmap?plat=xmtr&trace-id=1-a&admin-key={KEY}"),
             format!("https://xmsl.dev/ipmap?trace-id=%1b%5b31mX&admin-key={KEY}"),
             format!("ftp://xmsl.dev/xmtr/{ID}"),
+            // Arabic-Indic and fullwidth digits.
+            "\u{661}\u{662}\u{663}-nBjPEnny".to_owned(),
+            "\u{ff11}\u{ff12}-nBjPEnny".to_owned(),
+            "https://xmsl.dev/xmtr/\u{661}\u{662}-nBjPEnny".to_owned(),
         ] {
             let error = named(&trace).unwrap_err().to_string();
             assert_eq!(
