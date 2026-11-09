@@ -184,6 +184,8 @@ xmtr traces                            # the uploads from this machine, newest f
 xmtr traces delete <trace ID>          # delete an upload
 ```
 
+A subcommand comes first and takes its options after it, such as `xmtr traces delete --dns quad9 <TRACE>`. Options before `traces` or `self` would turn the subcommand into a target to trace, so xmtr exits with status 2 instead.
+
 Every option is listed under [Options](#options).
 
 ### How a run works
