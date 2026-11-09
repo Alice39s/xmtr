@@ -26,7 +26,7 @@ use sentry::{
     TransportOptions,
 };
 
-use crate::cli::{self, Cli, Command, DEFAULT_API};
+use crate::cli::{self, Cli, Command, DEFAULT_API, TracesCommand};
 use crate::dns::{DnsSpec, Host};
 use crate::live::Console;
 use crate::upload;
@@ -60,8 +60,13 @@ fn policy(cli: &Cli, do_not_track: bool, interactive: bool) -> Option<Policy> {
     if do_not_track {
         return None;
     }
+    let usage = match &cli.command {
+        Some(Command::Manage(_)) => true,
+        Some(Command::Traces(traces)) => traces.deletes(),
+        None => !cli.no_upload,
+    };
     let policy = Policy {
-        usage: cli.command.is_some() || !cli.no_upload,
+        usage,
         ask: interactive,
     };
     (policy.usage || policy.ask).then_some(policy)
@@ -72,6 +77,8 @@ fn command_name(cli: &Cli) -> &'static str {
     match &cli.command {
         Some(Command::Manage(cli::SelfCommand::Update { .. })) => "self update",
         Some(Command::Manage(cli::SelfCommand::Uninstall)) => "self uninstall",
+        Some(Command::Traces(traces)) if traces.deletes() => "traces delete",
+        Some(Command::Traces(_)) => "traces list",
         None => "trace",
     }
 }
@@ -197,7 +204,7 @@ impl Redactor {
     }
 
     /// The hosts `cli` names that are not public services xmtr knows: the targets, a resolver
-    /// given by name, a gateway other than the default, and proxies from the environment.
+    /// given by name, gateways other than the default, and proxies from the environment.
     fn for_run(cli: &Cli) -> Self {
         let mut names = cli.targets.clone();
         if let DnsSpec::Server {
@@ -207,11 +214,20 @@ impl Redactor {
         {
             names.push(name.clone());
         }
-        if cli.api != DEFAULT_API
-            && let Ok(uri) = cli.api.parse::<ureq::http::Uri>()
-            && let Some(host) = uri.host()
-        {
-            names.push(host.to_owned());
+        let delete_api = match &cli.command {
+            Some(Command::Traces(traces)) => match &traces.command {
+                Some(TracesCommand::Delete(delete)) => delete.api.as_deref(),
+                _ => None,
+            },
+            _ => None,
+        };
+        for api in [Some(cli.api.as_str()), delete_api].into_iter().flatten() {
+            if api != DEFAULT_API
+                && let Ok(uri) = api.parse::<ureq::http::Uri>()
+                && let Some(host) = uri.host()
+            {
+                names.push(host.to_owned());
+            }
         }
         names.extend(upload::proxy_host());
         let home = env::home_dir().map(|home| home.to_string_lossy().into_owned());
@@ -541,6 +557,39 @@ mod tests {
         );
         assert_eq!(command_name(&trace), "trace");
         assert_eq!(command_name(&update), "self update");
+    }
+
+    #[test]
+    fn only_deleting_a_trace_counts_as_usage_of_the_trace_list() {
+        let list = cli(&["traces"]);
+        let json = cli(&["traces", "list", "--json"]);
+        let delete = cli(&["traces", "delete", "103115083070058496-nBjPEnny"]);
+        assert_eq!(policy(&list, false, false), None);
+        assert_eq!(
+            policy(&delete, false, false),
+            Some(Policy {
+                usage: true,
+                ask: false
+            })
+        );
+        assert_eq!(command_name(&list), "traces list");
+        assert_eq!(command_name(&json), "traces list");
+        assert_eq!(command_name(&delete), "traces delete");
+        assert!(cli::interactive(&list, true, true));
+        assert!(!cli::interactive(&json, true, true));
+        assert!(!cli::interactive(&cli(&["traces", "--json"]), true, true));
+        let custom = cli(&[
+            "traces",
+            "delete",
+            "--api",
+            "https://gateway.corp.example",
+            "103115083070058496-nBjPEnny",
+        ]);
+        assert_eq!(
+            Redactor::for_run(&custom)
+                .text("deleting https://gateway.corp.example/api/v1/traces/1"),
+            "deleting https://[host]/api/v1/traces/1"
+        );
     }
 
     #[test]

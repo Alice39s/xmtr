@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::dns::DnsSpec;
 
@@ -121,6 +121,66 @@ pub enum Command {
     /// Update or remove this installation.
     #[command(name = "self", subcommand)]
     Manage(SelfCommand),
+    /// List the traces uploaded from this machine, or delete one.
+    Traces(TracesArgs),
+}
+
+// `xmtr traces` without a subcommand lists.
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true, flatten_help = true)]
+pub struct TracesArgs {
+    #[command(subcommand)]
+    pub command: Option<TracesCommand>,
+
+    #[command(flatten)]
+    pub list: ListArgs,
+}
+
+impl TracesArgs {
+    /// True when the command deletes a trace, which takes the network.
+    pub const fn deletes(&self) -> bool {
+        matches!(self.command, Some(TracesCommand::Delete(_)))
+    }
+
+    /// True when the list is printed as JSON.
+    pub const fn json(&self) -> bool {
+        match &self.command {
+            Some(TracesCommand::List(list)) => list.json,
+            Some(TracesCommand::Delete(_)) => false,
+            None => self.list.json,
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TracesCommand {
+    /// List the uploads, newest first, with their links and delete commands (the default).
+    List(ListArgs),
+    /// Delete a trace from the gateway and from the list.
+    Delete(DeleteArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ListArgs {
+    /// Print the complete records as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DeleteArgs {
+    /// Trace ID, IPMap link or admin link; an admin link carries the admin key.
+    #[arg(value_name = "TRACE")]
+    pub trace: String,
+
+    /// Admin key of the trace, when neither the list nor an admin link has it.
+    #[arg(long, value_name = "KEY")]
+    pub admin_key: Option<String>,
+
+    /// Gateway that stores the trace; defaults to the gateway the list recorded for it, then to
+    /// `XMTR_API` and the default gateway.
+    #[arg(long, value_name = "URL")]
+    pub api: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -186,7 +246,11 @@ fn interval(value: &str) -> Result<Duration, String> {
 /// True when someone at the terminal can answer questions: stdin and stderr are terminals, and
 /// neither `--json` nor `--quiet` keeps the output for programs.
 pub const fn interactive(cli: &Cli, stdin_terminal: bool, stderr_terminal: bool) -> bool {
-    stdin_terminal && stderr_terminal && !cli.json && !cli.quiet
+    let json = match &cli.command {
+        Some(Command::Traces(traces)) => traces.json(),
+        _ => cli.json,
+    };
+    stdin_terminal && stderr_terminal && !json && !cli.quiet
 }
 
 /// Option combinations that each parse on their own but cannot produce a route together.
@@ -233,6 +297,42 @@ mod tests {
         assert!(interval("0s").is_err());
         assert!(duration_at_least_1s("0s").is_err());
         assert!(interval("0.5").is_err());
+    }
+
+    #[test]
+    fn traces_lists_by_default_and_deletes_with_a_key_and_gateway() {
+        let parse = |args: &[&str]| Cli::try_parse_from([&["xmtr", "traces"], args].concat());
+        let traces = |cli: Cli| match cli.command {
+            Some(Command::Traces(traces)) => traces,
+            command => panic!("{command:?}"),
+        };
+        let list = traces(parse(&[]).unwrap());
+        assert!(list.command.is_none() && !list.json() && !list.deletes());
+        assert!(traces(parse(&["--json"]).unwrap()).json());
+        assert!(traces(parse(&["list", "--json"]).unwrap()).json());
+        let delete = traces(
+            parse(&[
+                "delete",
+                "103115083070058496-nBjPEnny",
+                "--admin-key",
+                "1b4e28ba-2fa1-4d2b-883f-0016d3cca427",
+                "--api",
+                "http://127.0.0.1:8787",
+            ])
+            .unwrap(),
+        );
+        assert!(delete.deletes() && !delete.json());
+        let Some(TracesCommand::Delete(args)) = delete.command else {
+            panic!("{delete:?}");
+        };
+        assert_eq!(args.trace, "103115083070058496-nBjPEnny");
+        assert_eq!(
+            args.admin_key.as_deref(),
+            Some("1b4e28ba-2fa1-4d2b-883f-0016d3cca427")
+        );
+        assert_eq!(args.api.as_deref(), Some("http://127.0.0.1:8787"));
+        assert!(parse(&["--json", "delete", "1"]).is_err());
+        assert!(parse(&["delete"]).is_err());
     }
 
     #[test]

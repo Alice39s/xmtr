@@ -1,12 +1,25 @@
-//! Uploaded traces: the admin link and the delete command printed after an upload.
+//! Uploaded traces: the admin link and the delete command printed after an upload, and
+//! `xmtr traces`, which lists the uploads kept on this machine and deletes them.
 
+#[path = "traces/store.rs"]
+pub mod store;
+
+use std::fmt::{self, Display};
+use std::path::Path;
+use std::time::SystemTime;
+
+use anyhow::{Context, Result, bail};
+use ureq::Agent;
+use url::Url;
+
+use self::store::Record;
+use crate::cli::{DeleteArgs, TracesArgs, TracesCommand};
 use crate::model::UploadAccepted;
+use crate::output::Stdout;
+use crate::upload;
 
 /// Labels in front of trace details are padded to the width of `trace-id`, so the values line up.
 const LABEL_WIDTH: usize = 8;
-
-/// Printed under the admin link and the delete command.
-pub const ADMIN_WARNING: &str = "Anyone with the admin link can delete this trace.";
 
 /// `name` padded to the label width, with the space before the value.
 pub fn label(name: &str) -> String {
@@ -23,21 +36,204 @@ pub fn admin_lines(trace: &UploadAccepted) -> Vec<(String, String)> {
     link.into_iter().chain(delete).collect()
 }
 
+/// Printed under the admin link and the delete command; `listed` adds where to find them again.
+pub const fn admin_warning(listed: bool) -> &'static str {
+    if listed {
+        "Anyone with the admin link can delete this trace. Run xmtr traces to see these links again."
+    } else {
+        "Anyone with the admin link can delete this trace."
+    }
+}
+
 /// The admin lines and the warning under them as plain text; none when the gateway returned no
 /// admin link.
-pub fn admin_text(trace: &UploadAccepted) -> Vec<String> {
+pub fn admin_text(trace: &UploadAccepted, listed: bool) -> Vec<String> {
     let mut lines: Vec<String> = admin_lines(trace)
         .into_iter()
         .map(|(label, value)| label + &value)
         .collect();
     if !lines.is_empty() {
-        lines.push(ADMIN_WARNING.to_owned());
+        lines.push(admin_warning(listed).to_owned());
     }
     lines
 }
 
+/// Adds an accepted upload of `targets` to the gateway at `api` to the list of uploads.
+pub fn save(trace: &UploadAccepted, api: &str, targets: &[String]) -> Result<()> {
+    let record = Record {
+        trace: trace.clone(),
+        uploaded_at: humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
+        api: api.to_owned(),
+        targets: targets.to_vec(),
+    };
+    store::append(&store::path()?, &record)
+}
+
+/// Runs `xmtr traces`; `api` is the gateway for a trace the list holds no gateway for.
+pub fn run(args: &TracesArgs, api: &str) -> Result<()> {
+    let path = store::path()?;
+    match &args.command {
+        Some(TracesCommand::Delete(delete)) => {
+            let agent = upload::proxied_agent(upload::UPLOAD_TIMEOUT);
+            let deletion = self::delete(&agent, &path, delete, api)?;
+            Stdout::new().line(deletion);
+        }
+        Some(TracesCommand::List(_)) | None => list(&path, args.json())?,
+    }
+    Ok(())
+}
+
+/// Prints the list at `path`, newest first.
+fn list(path: &Path, json: bool) -> Result<()> {
+    let mut records = store::read(path)?;
+    records.reverse();
+    let mut stdout = Stdout::new();
+    if json {
+        stdout.line(serde_json::to_string_pretty(&records).expect("records always encode"));
+    } else if records.is_empty() {
+        eprintln!("No uploads in {}", path.display());
+    } else {
+        stdout.line(listing(&records));
+    }
+    Ok(())
+}
+
+/// One block per record, separated by blank lines: when and what was traced, the trace ID, the
+/// IPMap link, the admin link and the delete command.
+fn listing(records: &[Record]) -> String {
+    let blocks: Vec<String> = records
+        .iter()
+        .map(|record| {
+            let mut heading = format!("{}  {}", record.uploaded_at, record.targets.join(", "));
+            if record.trace.pin {
+                heading.push_str("  PIN");
+            }
+            let mut lines = vec![
+                heading,
+                label("trace-id") + &record.trace.id,
+                record.trace.url.clone(),
+            ];
+            lines.extend(
+                admin_lines(&record.trace)
+                    .into_iter()
+                    .map(|(label, value)| label + &value),
+            );
+            lines.join("\n")
+        })
+        .collect();
+    blocks.join("\n\n")
+}
+
+/// A trace named on the command line: its ID, and the admin key an admin link carries.
+#[derive(Debug, PartialEq, Eq)]
+struct Named {
+    id: String,
+    admin_key: Option<String>,
+}
+
+/// Reads a trace ID, an IPMap link such as `https://xmsl.dev/xmtr/<ID>`, or a link with
+/// `trace-id` and `admin-key` parameters such as the admin link.
+fn named(trace: &str) -> Result<Named> {
+    let link = match Url::parse(trace) {
+        Ok(link) if matches!(link.scheme(), "http" | "https") => link,
+        _ => {
+            return Ok(Named {
+                id: trace.to_owned(),
+                admin_key: None,
+            });
+        }
+    };
+    let parameter = |name: &str| {
+        link.query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+    };
+    let id = parameter("trace-id")
+        .or_else(|| {
+            link.path_segments()
+                .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
+                .map(str::to_owned)
+        })
+        .context("the link names no trace")?;
+    Ok(Named {
+        id,
+        admin_key: parameter("admin-key"),
+    })
+}
+
+/// What `xmtr traces delete` did.
+#[derive(Debug, PartialEq, Eq)]
+struct Deletion {
+    id: String,
+    /// False when the gateway had no such trace.
+    on_gateway: bool,
+    /// True when the list held the trace.
+    listed: bool,
+}
+
+impl Display for Deletion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let id = &self.id;
+        match (self.on_gateway, self.listed) {
+            (true, true) => write!(f, "Deleted {id} and removed it from the trace list"),
+            (true, false) => write!(f, "Deleted {id}"),
+            (false, _) => write!(
+                f,
+                "The gateway has no trace {id}; removed it from the trace list"
+            ),
+        }
+    }
+}
+
+/// Deletes the trace `args` names from its gateway and from the list at `path`. The admin key
+/// comes from `--admin-key`, the admin link or the list, the gateway from `--api`, the list or
+/// `api`.
+fn delete(agent: &Agent, path: &Path, args: &DeleteArgs, api: &str) -> Result<Deletion> {
+    let named = named(&args.trace)?;
+    let records = store::read(path)?;
+    let record = records.iter().find(|record| record.trace.id == named.id);
+    let Some(admin_key) = args
+        .admin_key
+        .clone()
+        .or(named.admin_key)
+        .or_else(|| record.and_then(|record| record.trace.admin_key.clone()))
+    else {
+        bail!(
+            "no admin key for {}; pass --admin-key or the admin link",
+            named.id
+        );
+    };
+    let api = args
+        .api
+        .as_deref()
+        .or(record.map(|record| record.api.as_str()))
+        .unwrap_or(api);
+    let on_gateway = upload::delete(agent, api, &named.id, &admin_key)?;
+    let listed = store::remove(path, &named.id).with_context(|| {
+        let done = if on_gateway { "deleted" } else { "not found" };
+        format!(
+            "{} {done} on the gateway; removing it from the trace list",
+            named.id
+        )
+    })?;
+    if !on_gateway && !listed {
+        bail!("the gateway at {api} has no trace {}", named.id);
+    }
+    Ok(Deletion {
+        id: named.id,
+        on_gateway,
+        listed,
+    })
+}
+
 #[cfg(test)]
 pub mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::thread::{self, JoinHandle};
+    use std::time::Duration;
+
+    use super::store::tests::{record, scratch};
     use super::*;
 
     pub const ID: &str = "103115083070058496-nBjPEnny";
@@ -61,16 +257,20 @@ pub mod tests {
 
     #[test]
     fn lines_up_the_admin_link_and_delete_command_with_the_trace_id() {
-        let text = admin_text(&accepted());
         assert_eq!(
-            text,
+            admin_text(&accepted(), true),
             [
                 format!("admin    https://xmsl.dev/ipmap?plat=xmtr&trace-id={ID}&admin-key={KEY}"),
                 format!(
                     "delete   curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/{ID}?admin-key={KEY}'"
                 ),
-                ADMIN_WARNING.to_owned(),
+                "Anyone with the admin link can delete this trace. Run xmtr traces to see these links again."
+                    .to_owned(),
             ]
+        );
+        assert_eq!(
+            admin_text(&accepted(), false).last().map(String::as_str),
+            Some("Anyone with the admin link can delete this trace.")
         );
         assert_eq!(label("trace-id"), "trace-id ");
     }
@@ -83,6 +283,231 @@ pub mod tests {
             admin_api_url: None,
             ..accepted()
         };
-        assert!(admin_text(&trace).is_empty());
+        assert!(admin_text(&trace, true).is_empty());
+    }
+
+    #[test]
+    fn lists_each_upload_with_its_links() {
+        let mut old = record("1-a");
+        old.trace.admin_key = None;
+        old.trace.admin_url = None;
+        old.trace.admin_api_url = None;
+        old.trace.pin = true;
+        old.targets = vec!["example.com".to_owned()];
+        assert_eq!(
+            listing(&[record(ID), old]),
+            format!(
+                "2026-11-09T04:12:33Z  1.1.1.1, cloudflare.com
+trace-id {ID}
+https://xmsl.dev/xmtr/{ID}
+admin    https://xmsl.dev/ipmap?plat=xmtr&trace-id={ID}&admin-key={KEY}
+delete   curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/{ID}?admin-key={KEY}'
+
+2026-11-09T04:12:33Z  example.com  PIN
+trace-id 1-a
+https://xmsl.dev/xmtr/1-a"
+            )
+        );
+    }
+
+    #[test]
+    fn reads_trace_ids_and_links() {
+        let id = |id: &str| Named {
+            id: id.to_owned(),
+            admin_key: None,
+        };
+        assert_eq!(named(ID).unwrap(), id(ID));
+        assert_eq!(
+            named(&format!("https://xmsl.dev/xmtr/{ID}")).unwrap(),
+            id(ID)
+        );
+        assert_eq!(
+            named(&format!("https://xmsl.dev/xmtr/{ID}/")).unwrap(),
+            id(ID)
+        );
+        assert_eq!(
+            named(&format!("https://xmsl.dev/ipmap?plat=xmtr&trace-id={ID}")).unwrap(),
+            id(ID)
+        );
+        assert_eq!(
+            named(accepted().admin_url.as_deref().unwrap()).unwrap(),
+            Named {
+                id: ID.to_owned(),
+                admin_key: Some(KEY.to_owned()),
+            }
+        );
+        assert!(named("https://xmsl.dev").is_err());
+    }
+
+    /// Answers one request on a port of this machine with `status` and a problem `body`, and
+    /// returns the gateway address and the request head.
+    fn gateway(status: &str, body: &str) -> (String, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = format!("http://{}", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut head = String::new();
+            while !head.ends_with("\r\n\r\n") {
+                assert_ne!(stream.read_line(&mut head).unwrap(), 0);
+            }
+            stream.get_mut().write_all(response.as_bytes()).unwrap();
+            head
+        });
+        (api, server)
+    }
+
+    fn delete_args(trace: &str, admin_key: Option<&str>, api: Option<&str>) -> DeleteArgs {
+        DeleteArgs {
+            trace: trace.to_owned(),
+            admin_key: admin_key.map(str::to_owned),
+            api: api.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn deletes_a_listed_trace_with_its_key_on_its_gateway() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let (api, server) = gateway("200 OK", r#"{"ok":true,"deleted":true}"#);
+        let mut listed = record(ID);
+        listed.api = api;
+        store::append(&path, &record("1-a")).unwrap();
+        store::append(&path, &listed).unwrap();
+        let deletion = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(&format!("https://xmsl.dev/xmtr/{ID}"), None, None),
+            "http://192.0.2.1:9",
+        )
+        .unwrap();
+        assert_eq!(
+            deletion,
+            Deletion {
+                id: ID.to_owned(),
+                on_gateway: true,
+                listed: true,
+            }
+        );
+        assert_eq!(
+            deletion.to_string(),
+            format!("Deleted {ID} and removed it from the trace list")
+        );
+        let head = server.join().unwrap().to_ascii_lowercase();
+        assert!(
+            head.starts_with(&format!(
+                "delete /api/v1/traces/{} http/1.1\r\n",
+                ID.to_ascii_lowercase()
+            )),
+            "{head}"
+        );
+        assert!(
+            head.contains(&format!("\r\nx-trace-admin-key: {KEY}\r\n")),
+            "{head}"
+        );
+        assert_eq!(store::read(&path).unwrap(), [record("1-a")]);
+    }
+
+    #[test]
+    fn an_admin_link_deletes_a_trace_the_list_does_not_hold() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let (api, server) = gateway("200 OK", r#"{"ok":true}"#);
+        let deletion = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(accepted().admin_url.as_deref().unwrap(), None, Some(&api)),
+            "http://192.0.2.1:9",
+        )
+        .unwrap();
+        assert_eq!(deletion.to_string(), format!("Deleted {ID}"));
+        assert!(server.join().unwrap().contains(KEY));
+    }
+
+    #[test]
+    fn a_trace_the_gateway_lost_leaves_the_list() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let (api, server) = gateway("404 Not Found", r#"{"title":"Not Found"}"#);
+        let mut listed = record(ID);
+        listed.api = api.clone();
+        store::append(&path, &listed).unwrap();
+        let deletion = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(ID, None, None),
+            &api,
+        )
+        .unwrap();
+        assert!(!deletion.on_gateway && deletion.listed);
+        assert_eq!(store::read(&path).unwrap(), []);
+        server.join().unwrap();
+
+        let (api, server) = gateway("404 Not Found", r#"{"title":"Not Found"}"#);
+        let error = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(ID, Some(KEY), Some(&api)),
+            &api,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("the gateway at {api} has no trace {ID}")
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_rejected_key_keeps_the_trace_listed() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let (api, server) = gateway(
+            "403 Forbidden",
+            r#"{"title":"Forbidden","detail":"The admin key does not match this trace\u001b[2J","adminKeyRejected":true}"#,
+        );
+        store::append(&path, &record(ID)).unwrap();
+        let error = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(ID, Some("00000000-0000-4000-8000-000000000000"), Some(&api)),
+            &api,
+        )
+        .unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "deletion rejected with HTTP 403: The admin key does not match this trace\u{fffd}[2J"
+        );
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .contains("00000000-0000-4000-8000-000000000000")
+        );
+        assert_eq!(store::read(&path).unwrap(), [record(ID)]);
+    }
+
+    #[test]
+    fn needs_an_admin_key_before_asking_the_gateway() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let error = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(ID, None, None),
+            "http://192.0.2.1:9",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("no admin key for {ID}; pass --admin-key or the admin link")
+        );
     }
 }
