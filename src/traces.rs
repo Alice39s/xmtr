@@ -83,9 +83,25 @@ pub fn run(args: &TracesArgs, api: &str) -> Result<()> {
     Ok(())
 }
 
+/// Warns about the lines of the list at `path` that hold no record.
+fn warn_unreadable(path: &Path, list: &store::List) {
+    if list.unreadable.is_empty() {
+        return;
+    }
+    let numbers: Vec<String> = list.unreadable.iter().map(usize::to_string).collect();
+    let noun = if numbers.len() == 1 { "line" } else { "lines" };
+    eprintln!(
+        "warning: skipped unreadable {noun} {} of {}",
+        numbers.join(", "),
+        path.display()
+    );
+}
+
 /// Prints the list at `path`, newest first.
 fn list(path: &Path, json: bool) -> Result<()> {
-    let mut records = store::read(path)?;
+    let list = store::read(path)?;
+    warn_unreadable(path, &list);
+    let mut records = list.records;
     records.reverse();
     let mut stdout = Stdout::new();
     if json {
@@ -190,13 +206,27 @@ impl Display for Deletion {
 /// `api`.
 fn delete(agent: &Agent, path: &Path, args: &DeleteArgs, api: &str) -> Result<Deletion> {
     let named = named(&args.trace)?;
-    let records = store::read(path)?;
-    let record = records.iter().find(|record| record.trace.id == named.id);
-    let Some(admin_key) = args
-        .admin_key
-        .clone()
-        .or(named.admin_key)
-        .or_else(|| record.and_then(|record| record.trace.admin_key.clone()))
+    let given_key = args.admin_key.clone().or(named.admin_key);
+    // With the admin key and the gateway on the command line the list is not needed; a list that
+    // cannot be read then only keeps the trace in it.
+    let list = match store::read(path) {
+        Ok(list) => {
+            warn_unreadable(path, &list);
+            Some(list)
+        }
+        Err(error) if given_key.is_some() && args.api.is_some() => {
+            eprintln!("warning: {error:#}");
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let record = list.as_ref().and_then(|list| {
+        list.records
+            .iter()
+            .find(|record| record.trace.id == named.id)
+    });
+    let Some(admin_key) =
+        given_key.or_else(|| record.and_then(|record| record.trace.admin_key.clone()))
     else {
         bail!(
             "no admin key for {}; pass --admin-key or the admin link",
@@ -209,13 +239,14 @@ fn delete(agent: &Agent, path: &Path, args: &DeleteArgs, api: &str) -> Result<De
         .or(record.map(|record| record.api.as_str()))
         .unwrap_or(api);
     let on_gateway = upload::delete(agent, api, &named.id, &admin_key)?;
-    let listed = store::remove(path, &named.id).with_context(|| {
-        let done = if on_gateway { "deleted" } else { "not found" };
-        format!(
-            "{} {done} on the gateway; removing it from the trace list",
-            named.id
-        )
-    })?;
+    let listed = list.is_some()
+        && store::remove(path, &named.id).with_context(|| {
+            let done = if on_gateway { "deleted" } else { "not found" };
+            format!(
+                "{} {done} on the gateway; removing it from the trace list",
+                named.id
+            )
+        })?;
     if !on_gateway && !listed {
         bail!("the gateway at {api} has no trace {}", named.id);
     }
@@ -418,7 +449,7 @@ https://xmsl.dev/xmtr/1-a",
             head.contains(&format!("\r\nx-trace-admin-key: {KEY}\r\n")),
             "{head}"
         );
-        assert_eq!(store::read(&path).unwrap(), [record("1-a")]);
+        assert_eq!(store::read(&path).unwrap().records, [record("1-a")]);
     }
 
     #[test]
@@ -453,7 +484,7 @@ https://xmsl.dev/xmtr/1-a",
         )
         .unwrap();
         assert!(!deletion.on_gateway && deletion.listed);
-        assert_eq!(store::read(&path).unwrap(), []);
+        assert_eq!(store::read(&path).unwrap(), store::List::default());
         server.join().unwrap();
 
         let (api, server) = gateway("404 Not Found", r#"{"title":"Not Found"}"#);
@@ -497,7 +528,56 @@ https://xmsl.dev/xmtr/1-a",
                 .unwrap()
                 .contains("00000000-0000-4000-8000-000000000000")
         );
-        assert_eq!(store::read(&path).unwrap(), [record(ID)]);
+        assert_eq!(store::read(&path).unwrap().records, [record(ID)]);
+    }
+
+    #[test]
+    fn unreadable_lines_in_the_list_do_not_stop_a_deletion() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let (api, server) = gateway("200 OK", r#"{"ok":true}"#);
+        let mut listed = record(ID);
+        listed.api = api;
+        std::fs::write(&path, "{not json\n").unwrap();
+        store::append(&path, &listed).unwrap();
+        let deletion = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(ID, None, None),
+            "http://192.0.2.1:9",
+        )
+        .unwrap();
+        assert!(deletion.on_gateway && deletion.listed);
+        assert!(server.join().unwrap().contains(KEY));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json\n");
+    }
+
+    #[test]
+    fn a_list_that_cannot_be_read_needs_the_key_and_gateway_on_the_command_line() {
+        let dir = scratch();
+        // A directory in place of the list cannot be read as one.
+        let path = dir.path().join("traces.jsonl");
+        std::fs::create_dir(&path).unwrap();
+        let (api, server) = gateway("200 OK", r#"{"ok":true}"#);
+        let admin_link = accepted().admin_url.unwrap();
+        let deletion = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(&admin_link, None, Some(&api)),
+            "http://192.0.2.1:9",
+        )
+        .unwrap();
+        assert_eq!(deletion.to_string(), format!("Deleted {ID}"));
+        server.join().unwrap();
+
+        let error = delete(
+            &upload::direct_agent(),
+            &path,
+            &delete_args(&admin_link, None, None),
+            "http://192.0.2.1:9",
+        )
+        .unwrap_err();
+        assert!(error.to_string().starts_with("reading "), "{error:#}");
     }
 
     #[test]
