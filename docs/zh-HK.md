@@ -284,7 +284,7 @@ IPMap 把探測包離開時的公網地址作為每條路由的起點。如果�
 curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/<trace ID>?admin-key=<admin key>'
 ```
 
-在 Windows 上，xmtr 輸出的命令是 `curl.exe -X DELETE "<URL>"`，cmd.exe 和 PowerShell 都能直接運行。只有由字母、數字和 `. _ ~ : / ? = & % -` 組成的 http 或 https URL 才會輸出成鏈接或命令，Windows 的命令裏還不能有 `%`。拿到管理鏈接或刪除命令的人都能刪除這條記錄，分享時只發 IPMap 鏈接。`--quiet` 不輸出這兩項。
+在 Windows 上，xmtr 輸出的命令是 `curl.exe -X DELETE "<URL>"`，cmd.exe 和 PowerShell 都能直接運行。只有由字母、數字和 `. _ ~ : / ? = & % -` 組成的 http 或 https URL 才會輸出成鏈接或命令，Windows 的命令裏還不能有 `%`。拿到管理鏈接或刪除命令的人都能刪除這條記錄，分享時只發 IPMap 鏈接。這兩項和路由一起輸出到 stdout，stdout 是管道或日誌文件時也一樣。在公開的 CI 日誌裏運行時請加 `-q`，這樣只輸出 IPMap 鏈接。
 
 xmtr 會把每次上傳記到本機的列表裏，包括時間、目標、網關、鏈接和 admin key：
 

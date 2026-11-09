@@ -284,7 +284,7 @@ The upload also returns an admin key, a random UUID, and two links that carry it
 curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/<trace ID>?admin-key=<admin key>'
 ```
 
-On Windows xmtr prints the command as `curl.exe -X DELETE "<URL>"`, which runs in both cmd.exe and PowerShell. xmtr prints a link or command only for an http or https URL made of letters, digits and `. _ ~ : / ? = & % -`, without `%` in the Windows command. Anyone with the admin link or the delete command can delete the trace; share the IPMap link instead. `--quiet` prints neither.
+On Windows xmtr prints the command as `curl.exe -X DELETE "<URL>"`, which runs in both cmd.exe and PowerShell. xmtr prints a link or command only for an http or https URL made of letters, digits and `. _ ~ : / ? = & % -`, without `%` in the Windows command. Anyone with the admin link or the delete command can delete the trace; share the IPMap link instead. Both go to stdout with the routes, also when stdout is a pipe or a log file. In public CI logs, run xmtr with `-q`, which prints only the IPMap link.
 
 xmtr adds every upload to a list on this machine, with the time, the targets, the gateway, the links and the admin key:
 
