@@ -29,7 +29,7 @@ use sentry::{
 use crate::cli::{self, Cli, Command, DEFAULT_API, TracesCommand};
 use crate::dns::{DnsSpec, Host};
 use crate::live::Console;
-use crate::upload;
+use crate::{traces, upload};
 
 /// Where reports go, fixed when xmtr is built: release builds take it from the `XMTR_TELEMETRY_DSN`
 /// secret, and builds without it send nothing.
@@ -193,6 +193,41 @@ fn redact_addresses(text: &str) -> String {
     .into_owned()
 }
 
+/// The hosts a run names that are not public services xmtr knows: the targets, a resolver given
+/// by name, gateways other than the default among `cli` and `listed`, and proxies from the
+/// environment.
+fn run_names(cli: &Cli, listed: &[String]) -> Vec<String> {
+    let mut names = cli.targets.clone();
+    if let DnsSpec::Server {
+        host: Host::Name(name),
+        ..
+    } = &cli.dns
+    {
+        names.push(name.clone());
+    }
+    let delete_api = match &cli.command {
+        Some(Command::Traces(traces)) => match &traces.command {
+            Some(TracesCommand::Delete(delete)) => delete.api.as_deref(),
+            _ => None,
+        },
+        _ => None,
+    };
+    let apis = [Some(cli.api.as_str()), delete_api]
+        .into_iter()
+        .flatten()
+        .chain(listed.iter().map(String::as_str));
+    for api in apis {
+        if api != DEFAULT_API
+            && let Ok(uri) = api.parse::<ureq::http::Uri>()
+            && let Some(host) = uri.host()
+        {
+            names.push(host.to_owned());
+        }
+    }
+    names.extend(upload::proxy_host());
+    names
+}
+
 impl Redactor {
     /// Hides `names` besides the addresses, paths and credentials every report loses.
     fn new(names: impl IntoIterator<Item = String>, home: Option<String>) -> Self {
@@ -210,35 +245,19 @@ impl Redactor {
         }
     }
 
-    /// The hosts `cli` names that are not public services xmtr knows: the targets, a resolver
-    /// given by name, gateways other than the default, and proxies from the environment.
+    /// Hides the hosts of [`run_names`], with the gateways of the trace list for `xmtr traces`,
+    /// which deletes a listed trace on the gateway it was uploaded to. A list that cannot be read
+    /// adds no gateways; the command itself reports it.
     fn for_run(cli: &Cli) -> Self {
-        let mut names = cli.targets.clone();
-        if let DnsSpec::Server {
-            host: Host::Name(name),
-            ..
-        } = &cli.dns
-        {
-            names.push(name.clone());
-        }
-        let delete_api = match &cli.command {
-            Some(Command::Traces(traces)) => match &traces.command {
-                Some(TracesCommand::Delete(delete)) => delete.api.as_deref(),
-                _ => None,
-            },
-            _ => None,
+        let listed: Vec<String> = match &cli.command {
+            Some(Command::Traces(_)) => traces::store::path()
+                .and_then(|path| traces::store::read(&path))
+                .map(|list| list.records.into_iter().map(|record| record.api).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
         };
-        for api in [Some(cli.api.as_str()), delete_api].into_iter().flatten() {
-            if api != DEFAULT_API
-                && let Ok(uri) = api.parse::<ureq::http::Uri>()
-                && let Some(host) = uri.host()
-            {
-                names.push(host.to_owned());
-            }
-        }
-        names.extend(upload::proxy_host());
         let home = env::home_dir().map(|home| home.to_string_lossy().into_owned());
-        Self::new(names, home)
+        Self::new(run_names(cli, &listed), home)
     }
 
     fn text(&self, text: &str) -> String {
@@ -597,6 +616,12 @@ mod tests {
             Redactor::for_run(&custom)
                 .text("deleting https://gateway.corp.example/api/v1/traces/1"),
             "deleting https://[host]/api/v1/traces/1"
+        );
+        let listed = ["https://gw.corp.example".to_owned(), DEFAULT_API.to_owned()];
+        let redactor = Redactor::new(run_names(&delete, &listed), None);
+        assert_eq!(
+            redactor.text("gateway https://gw.corp.example, not stage-info-api.xmsl.dev"),
+            "gateway https://[host], not stage-info-api.xmsl.dev"
         );
     }
 
