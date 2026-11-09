@@ -284,7 +284,7 @@ IPMap 把探测包离开时的公网地址作为每条路由的起点。如果�
 curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/<trace ID>?admin-key=<admin key>'
 ```
 
-在 Windows 上，xmtr 输出的命令是 `curl.exe -X DELETE "<URL>"`，cmd.exe 和 PowerShell 都能直接运行。拿到管理链接或删除命令的人都能删除这条记录，分享时只发 IPMap 链接。`--quiet` 不输出这两项。
+在 Windows 上，xmtr 输出的命令是 `curl.exe -X DELETE "<URL>"`，cmd.exe 和 PowerShell 都能直接运行。只有由字母、数字和 `. _ ~ : / ? = & % -` 组成的 http 或 https URL 才会输出成链接或命令，Windows 的命令里还不能有 `%`。拿到管理链接或删除命令的人都能删除这条记录，分享时只发 IPMap 链接。`--quiet` 不输出这两项。
 
 xmtr 会把每次上传记到本机的列表里，包括时间、目标、网关、链接和 admin key：
 

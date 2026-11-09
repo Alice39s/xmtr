@@ -29,9 +29,11 @@ pub fn label(name: &str) -> String {
 }
 
 /// The admin link and the command that deletes the trace, each behind its label, for the fields
-/// the gateway returned.
+/// the gateway returned as plain URLs.
 pub fn admin_lines(trace: &UploadAccepted) -> Vec<(String, String)> {
-    let link = trace.admin_url.clone().map(|url| (label("admin"), url));
+    let link = trace
+        .admin_link()
+        .map(|url| (label("admin"), url.to_owned()));
     let delete = trace
         .delete_command()
         .map(|command| (label("delete"), command));
@@ -311,7 +313,7 @@ pub mod tests {
     /// The delete line of [`accepted`], quoted for the shells of this system.
     fn delete_line() -> String {
         let url = format!("https://stage-info-api.xmsl.dev/api/v1/traces/{ID}?admin-key={KEY}");
-        format!("delete   {}", Shell::NATIVE.delete_command(&url))
+        format!("delete   {}", Shell::NATIVE.delete_command(&url).unwrap())
     }
 
     #[test]

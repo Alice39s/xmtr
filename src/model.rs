@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize, Serializer};
+use url::Url;
 
 /// Leading bits of an uploaded source or destination address that are kept: the /24 network of
 /// IPv4 and the /48 network of IPv6.
@@ -174,12 +175,26 @@ pub struct UploadAccepted {
 }
 
 impl UploadAccepted {
+    /// The admin link, when it is a [plain URL](plain_url).
+    pub fn admin_link(&self) -> Option<&str> {
+        self.admin_url.as_deref().filter(|url| plain_url(url))
+    }
+
     /// The command that deletes the trace, for the shells of this system.
     pub fn delete_command(&self) -> Option<String> {
         self.admin_api_url
             .as_deref()
-            .map(|url| Shell::NATIVE.delete_command(url))
+            .and_then(|url| Shell::NATIVE.delete_command(url))
     }
+}
+
+/// True when `url` is an http or https URL made only of letters, digits and `. _ ~ : / ? = & % -`.
+/// The gateway's links have this form; links with other characters are not printed, since quotes,
+/// spaces and shell syntax in them could turn a pasted command into a different one.
+pub fn plain_url(url: &str) -> bool {
+    url.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._~:/?=&%-".contains(c))
+        && Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 /// Shells a printed command is pasted into.
@@ -199,21 +214,20 @@ impl Shell {
         Self::Posix
     };
 
-    /// `curl` sending a `DELETE` request to `url`.
+    /// `curl` sending a `DELETE` request to `url`, when `url` is a [plain URL](plain_url).
     ///
     /// POSIX shells get the URL in single quotes. cmd.exe has no single quotes, and Windows
     /// PowerShell 5.1 runs Invoke-WebRequest for `curl`, so Windows gets `curl.exe` and double
-    /// quotes. In double quotes `"` ends the URL in both shells and PowerShell expands `$` and
-    /// `` ` ``; they are percent-encoded as `%22`, `%24` and `%60`.
-    pub fn delete_command(self, url: &str) -> String {
+    /// quotes. cmd.exe expands `%NAME%` inside double quotes, so on Windows the URL must not hold
+    /// `%` either.
+    pub fn delete_command(self, url: &str) -> Option<String> {
+        if !plain_url(url) {
+            return None;
+        }
         match self {
-            Self::Posix => format!("curl -X DELETE '{}'", url.replace('\'', r"'\''")),
-            Self::Windows => format!(
-                "curl.exe -X DELETE \"{}\"",
-                url.replace('"', "%22")
-                    .replace('$', "%24")
-                    .replace('`', "%60")
-            ),
+            Self::Posix => Some(format!("curl -X DELETE '{url}'")),
+            Self::Windows if url.contains('%') => None,
+            Self::Windows => Some(format!("curl.exe -X DELETE \"{url}\"")),
         }
     }
 }
@@ -357,23 +371,56 @@ mod tests {
 
     #[test]
     fn quotes_the_delete_command_for_each_shell() {
-        let url = "https://gateway.example/api/v1/traces/1?admin-key=k";
+        let url = "https://gateway.example/api/v1/traces/1-a?admin-key=k";
         assert_eq!(
-            Shell::Posix.delete_command(url),
-            "curl -X DELETE 'https://gateway.example/api/v1/traces/1?admin-key=k'"
+            Shell::Posix.delete_command(url).as_deref(),
+            Some("curl -X DELETE 'https://gateway.example/api/v1/traces/1-a?admin-key=k'")
         );
         assert_eq!(
-            Shell::Windows.delete_command(url),
-            r#"curl.exe -X DELETE "https://gateway.example/api/v1/traces/1?admin-key=k""#
+            Shell::Windows.delete_command(url).as_deref(),
+            Some(r#"curl.exe -X DELETE "https://gateway.example/api/v1/traces/1-a?admin-key=k""#)
         );
-        let odd = r#"https://gateway.example/it's/"$(x)`?a=1&b=2"#;
+        let encoded = "http://127.0.0.1:8787/api/v1/traces/1%2Da?admin-key=k";
+        assert!(Shell::Posix.delete_command(encoded).is_some());
+        assert_eq!(Shell::Windows.delete_command(encoded), None);
+    }
+
+    #[test]
+    fn prints_only_plain_http_links() {
+        for odd in [
+            "https://gateway.example/it's?admin-key=k",
+            r#"https://gateway.example/"?admin-key=k"#,
+            "https://gateway.example/\u{201d}; calc; \u{201c}",
+            r"https://gateway.example/a\b",
+            "https://gateway.example/$(id)",
+            "https://gateway.example/`id`",
+            "https://gateway.example/a b",
+            "file:///etc/passwd",
+            "javascript:alert",
+            "gateway.example/api",
+        ] {
+            assert!(!plain_url(odd), "{odd}");
+            for shell in [Shell::Posix, Shell::Windows] {
+                assert_eq!(shell.delete_command(odd), None, "{odd}");
+            }
+        }
+        let accepted = UploadAccepted {
+            id: "1-a".to_owned(),
+            pin: false,
+            url: String::new(),
+            admin_key: Some("k".to_owned()),
+            admin_url: Some("https://xmsl.dev/ipmap?trace-id=1-a&admin-key=k\u{202e}".to_owned()),
+            admin_api_url: Some("https://gateway.example/\u{201d}".to_owned()),
+        };
+        assert_eq!(accepted.admin_link(), None);
+        assert_eq!(accepted.delete_command(), None);
+        let plain = UploadAccepted {
+            admin_url: Some("https://xmsl.dev/ipmap?plat=xmtr&trace-id=1-a&admin-key=k".to_owned()),
+            ..accepted
+        };
         assert_eq!(
-            Shell::Posix.delete_command(odd),
-            r#"curl -X DELETE 'https://gateway.example/it'\''s/"$(x)`?a=1&b=2'"#
-        );
-        assert_eq!(
-            Shell::Windows.delete_command(odd),
-            r#"curl.exe -X DELETE "https://gateway.example/it's/%22%24(x)%60?a=1&b=2""#
+            plain.admin_link(),
+            Some("https://xmsl.dev/ipmap?plat=xmtr&trace-id=1-a&admin-key=k")
         );
     }
 
