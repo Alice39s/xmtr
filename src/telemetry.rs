@@ -157,6 +157,13 @@ struct Redactor {
 static CREDENTIALS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@").expect("the pattern is valid")
 });
+/// The value of an `admin-key` query parameter, and any UUID, the form admin keys take.
+static ADMIN_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(admin-key=)[^&#\s]+|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    )
+    .expect("the pattern is valid")
+});
 static USER_DIRECTORY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(/home/|/Users/|\\Users\\)[^/\\\s]+").expect("the pattern is valid")
 });
@@ -235,8 +242,9 @@ impl Redactor {
     }
 
     fn text(&self, text: &str) -> String {
+        let text = ADMIN_KEY.replace_all(text, "${1}[admin-key]");
         let mut text = CREDENTIALS
-            .replace_all(text, "${1}[credentials]@")
+            .replace_all(&text, "${1}[credentials]@")
             .into_owned();
         if let Some(names) = &self.names {
             text = names.replace_all(&text, "[host]").into_owned();
@@ -633,6 +641,21 @@ mod tests {
         assert_eq!(
             redactor.text("proxy socks5h://me:secret@203.0.113.9:1080 refused"),
             "proxy socks5h://[credentials]@[ip] refused"
+        );
+    }
+
+    #[test]
+    fn removes_admin_keys() {
+        let redactor = Redactor::default();
+        assert_eq!(
+            redactor.text(
+                "deleting https://xmsl.dev/ipmap?trace-id=1-a&Admin-Key=not-a-uuid&x=1 with 1B4E28BA-2FA1-4D2B-883F-0016D3CCA427"
+            ),
+            "deleting https://xmsl.dev/ipmap?trace-id=1-a&Admin-Key=[admin-key]&x=1 with [admin-key]"
+        );
+        assert_eq!(
+            redactor.text("no admin key for 103115083070058496-nBjPEnny"),
+            "no admin key for 103115083070058496-nBjPEnny"
         );
     }
 
