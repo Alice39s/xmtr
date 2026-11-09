@@ -180,6 +180,8 @@ xmtr --no-upload 192.0.2.1             # print the routes, upload nothing
 xmtr --pin 2580 example.com            # viewers enter 2580 to open the map
 xmtr -q 1.1.1.1                        # print only the IPMap link
 xmtr --json 1.1.1.1 > trace.json       # the upload payload as JSON, tables on stderr
+xmtr traces                            # the uploads from this machine, newest first
+xmtr traces delete <trace ID>          # delete an upload
 ```
 
 Every option is listed under [Options](#options).
@@ -196,13 +198,13 @@ A run has five steps, numbered the same way in the progress panel.
    UDP over raw sockets uses Dublin traceroute: each round keeps both ports fixed to follow one flow through routers that balance traffic by flow, and replies can be matched after NAT changes the UDP checksum. ICMP, TCP and UDP over unprivileged sockets send classic probes.
 3. **Lookup.** Public hop addresses get reverse DNS names and origin AS numbers ([Team Cymru](https://www.team-cymru.com/ip-asn-mapping)), at most 32 lookups at a time. The step ends after 5 seconds at the latest, and the result notes how many addresses did not answer. Private addresses are never sent to a resolver given with `--dns`. `--no-rdns` skips this step.
 4. **Upload.** The routes are uploaded to `--api`; see [Upload and sharing](#upload-and-sharing). `--no-upload` skips this step.
-5. **Result.** The IPMap link, any notes, and one table per route.
+5. **Result.** The IPMap link, the admin link and the delete command, any notes, and one table per route.
 
 Ctrl-C stops the run and exits with status 130.
 
 ### Progress and output
 
-In a terminal, a panel below the prompt shows the steps as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. When the run ends, the panel turns into the result: the IPMap link first, then any notes, then each route as a table, with runs of silent hops folded into one line. The panel is drawn on stderr and needs stdout on the terminal as well.
+In a terminal, a panel below the prompt shows the steps as they run: which step is active, one progress bar per route, and how many reverse lookups have answered. When the run ends, the panel turns into the result: the IPMap link, the admin link and the delete command first, then any notes, then each route as a table, with runs of silent hops folded into one line. Links wider than the terminal are printed below the panel as plain text, which the terminal wraps. The panel is drawn on stderr and needs stdout on the terminal as well.
 
 `--progress` picks the view, and `auto` chooses one from the terminal:
 
@@ -218,7 +220,7 @@ A table that does not fit the terminal, even with long host names wrapped, becom
 
 `--theme` sets the colors of the panel and the line view. `auto` asks the terminal for its background and uses RGB colors when `COLORTERM` is `truecolor` or `24bit`; `dark`, `light`, `dark-ansi` and `light-ansi` choose directly.
 
-Piped or redirected, xmtr prints each route as plain text, followed by the trace ID and the link:
+Piped or redirected, xmtr prints each route as plain text, followed by the trace ID, the link, the admin link and the delete command:
 
 ```text
 $ sudo xmtr --min-rounds 20 121.55.201.201 | cat
@@ -255,6 +257,9 @@ $ sudo xmtr --min-rounds 20 121.55.201.201 | cat
 
 trace-id 103115083070058496-nBjPEnny
 https://xmsl.dev/xmtr/103115083070058496-nBjPEnny
+admin    https://xmsl.dev/ipmap?plat=xmtr&trace-id=103115083070058496-nBjPEnny&admin-key=1b4e28ba-2fa1-4d2b-883f-0016d3cca427
+delete   curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/103115083070058496-nBjPEnny?admin-key=1b4e28ba-2fa1-4d2b-883f-0016d3cca427'
+Anyone with the admin link can delete this trace. Run xmtr traces to see these links again.
 ```
 
 ### Upload and sharing
@@ -270,6 +275,34 @@ The upload returns a trace ID and a link to its map. The trace ID is a snowflake
 IPMap starts each route at the public address its probes left from. When their local address is not public (private, CGNAT, ULA, link-local or another reserved range), xmtr takes the address the gateway sees on an HTTPS request sent from that local address straight to the gateway, ignoring proxy settings. The request runs during the trace and waits at most 3 seconds; a route without a public source address is uploaded without one.
 
 The upload carries the source address, the destination and a target given as an IP address cut to their network, the /24 of IPv4 or the /48 of IPv6, such as `203.0.113.0` for `203.0.113.7` and `2001:db8:1::` for `2001:db8:1:2::7`. The hops keep their full addresses, and the tables in the terminal show the full destination. Each address at a hop also carries the lowest round trip of its own replies and the MPLS label stack it quoted.
+
+### Delete an upload
+
+The upload also returns an admin key, a random UUID, and two links that carry it: the admin link opens the trace in IPMap with the key, and the gateway URL in the delete command deletes the trace.
+
+```sh
+curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/<trace ID>?admin-key=<admin key>'
+```
+
+Anyone with the admin link or the delete command can delete the trace; share the IPMap link instead. `--quiet` prints neither.
+
+xmtr adds every upload to a list on this machine, with the time, the targets, the gateway, the links and the admin key:
+
+| System | List |
+| --- | --- |
+| Linux, FreeBSD, Android | `$XDG_DATA_HOME/xmtr/traces.jsonl`, by default `~/.local/share/xmtr/traces.jsonl` |
+| macOS | `~/Library/Application Support/xmtr/traces.jsonl` |
+| Windows | `%APPDATA%\xmtr\traces.jsonl` |
+
+On Unix only your user can read the file. `sudo` on most Linux distributions sets `HOME` to root's home, so uploads from `sudo xmtr` go to root's list, which `sudo xmtr traces` shows. macOS keeps `HOME` under `sudo`, and the list stays with your user. When the list cannot be written, the run prints a note and keeps its exit status.
+
+```sh
+xmtr traces                      # the uploads, newest first, with their links and delete commands
+xmtr traces --json               # the complete records
+xmtr traces delete <TRACE>       # delete the trace from the gateway and from the list
+```
+
+`<TRACE>` is a trace ID, an IPMap link or an admin link. The admin key comes from `--admin-key`, the admin link or the list, in that order, and the gateway from `--api`, the list, `XMTR_API` or the default gateway. A trace the gateway no longer has is removed from the list as well.
 
 ### DNS
 
@@ -290,6 +323,8 @@ The upload carries the source address, the destination and a target given as an 
 
 ```text
 Usage: xmtr [OPTIONS] <TARGET>...
+       xmtr traces [--json]
+       xmtr traces delete <TRACE> [--admin-key <KEY>] [--api <URL>]
        xmtr self update [--force] [--tag <TAG>]
        xmtr self uninstall
 
@@ -321,7 +356,7 @@ Release binaries send reports to the xmtr project on [GlitchTip](https://glitcht
 
 | Report | Sent | Contents |
 | --- | --- | --- |
-| Usage | for one run in 100 that uploads, and for `xmtr self` commands | xmtr version, OS and version (such as Debian 13), CPU architecture, command, duration, whether the run had errors |
+| Usage | for one run in 100 that uploads or deletes a trace, and for `xmtr self` commands | xmtr version, OS and version (such as Debian 13), CPU architecture, command, duration, whether the run had errors |
 | Error | after a run with errors, when you answer yes | the error messages, xmtr version, OS, CPU architecture |
 | Crash | after a panic, when you answer yes | the panic message and its source location, xmtr version, OS, CPU architecture |
 

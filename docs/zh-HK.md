@@ -180,6 +180,8 @@ xmtr --no-upload 192.0.2.1             # 只輸出路由，不上傳
 xmtr --pin 2580 example.com            # 打開地圖前需要輸入 2580
 xmtr -q 1.1.1.1                        # 只輸出 IPMap 鏈接
 xmtr --json 1.1.1.1 > trace.json       # 以 JSON 輸出上傳內容，表格寫到 stderr
+xmtr traces                            # 列出本機上傳過的記錄，新的在前
+xmtr traces delete <trace ID>          # 刪除一條上傳記錄
 ```
 
 全部選項見[選項](#選項)。
@@ -196,13 +198,13 @@ xmtr --json 1.1.1.1 > trace.json       # 以 JSON 輸出上傳內容，表格寫
    通過原始套接字發送的 UDP 探測採用 Dublin 方式：同一輪的探測包使用相同的端口，讓按流分擔流量的路由器將它們發到同一條鏈路上；NAT 修改 UDP 校驗和後，仍能識別回包。ICMP、TCP 以及非特權套接字的 UDP 使用經典探測包。
 3. **Lookup（查詢）**：為公網地址的跳查詢反向解析名稱和所屬 AS 號（[Team Cymru](https://www.team-cymru.com/ip-asn-mapping)），同時最多查詢 32 個地址。這一步最多持續 5 秒，結果裏會註明有多少個地址沒有回應。私有地址永遠不會發給 `--dns` 指定的解析器。`--no-rdns` 跳過這一步。
 4. **Upload（上傳）**：把路由上傳到 `--api`，詳見[上傳與分享](#上傳與分享)。`--no-upload` 跳過這一步。
-5. **Result（結果）**：輸出 IPMap 鏈接、備註，以及每條路由的表格。
+5. **Result（結果）**：輸出 IPMap 鏈接、管理鏈接和刪除命令、備註，以及每條路由的表格。
 
 按 Ctrl-C 會終止運行，退出碼為 130。
 
 ### 進度與輸出
 
-在終端裏，提示符下方的面板會實時顯示各個步驟：當前進行到哪一步、每條路由一根進度條，以及已有多少個反向解析得到回應。運行結束後，面板變成結果：先是 IPMap 鏈接，然後是備註，接着每條路由一張表格，連續不回應的跳摺疊成一行。面板畫在 stderr 上，同時要求 stdout 也連着終端。
+在終端裏，提示符下方的面板會實時顯示各個步驟：當前進行到哪一步、每條路由一根進度條，以及已有多少個反向解析得到回應。運行結束後，面板變成結果：先是 IPMap 鏈接、管理鏈接和刪除命令，然後是備註，接着每條路由一張表格，連續不回應的跳摺疊成一行。比終端還寬的鏈接以純文本輸出在面板下方，由終端自動換行。面板畫在 stderr 上，同時要求 stdout 也連着終端。
 
 `--progress` 選擇進度視圖，`auto` 根據終端自動選擇：
 
@@ -218,7 +220,7 @@ xmtr --json 1.1.1.1 > trace.json       # 以 JSON 輸出上傳內容，表格寫
 
 `--theme` 設置面板和行視圖的配色。`auto` 會向終端查詢背景色，`COLORTERM` 為 `truecolor` 或 `24bit` 時使用 RGB 顏色；`dark`、`light`、`dark-ansi` 和 `light-ansi` 直接指定。
 
-通過管道或重定向輸出時，xmtr 以純文本輸出每條路由，最後是 trace ID 和鏈接：
+通過管道或重定向輸出時，xmtr 以純文本輸出每條路由，最後是 trace ID、鏈接、管理鏈接和刪除命令：
 
 ```text
 $ sudo xmtr --min-rounds 20 121.55.201.201 | cat
@@ -255,6 +257,9 @@ $ sudo xmtr --min-rounds 20 121.55.201.201 | cat
 
 trace-id 103115083070058496-nBjPEnny
 https://xmsl.dev/xmtr/103115083070058496-nBjPEnny
+admin    https://xmsl.dev/ipmap?plat=xmtr&trace-id=103115083070058496-nBjPEnny&admin-key=1b4e28ba-2fa1-4d2b-883f-0016d3cca427
+delete   curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/103115083070058496-nBjPEnny?admin-key=1b4e28ba-2fa1-4d2b-883f-0016d3cca427'
+Anyone with the admin link can delete this trace. Run xmtr traces to see these links again.
 ```
 
 ### 上傳與分享
@@ -270,6 +275,34 @@ https://xmsl.dev/xmtr/103115083070058496-nBjPEnny
 IPMap 把探測包離開時的公網地址作為每條路由的起點。如果本地地址不是公網地址（私有地址、CGNAT、ULA、鏈路本地地址或其他保留地址），xmtr 會從這個本地地址直接向網關發一個 HTTPS 請求，不經過代理設置，取網關看到的地址。這個請求在追蹤期間進行，最多等 3 秒；拿不到公網源地址的路由上傳時不帶源地址。
 
 上傳內容中的源地址、目的地址，以及以 IP 地址形式給出的目標，都會截斷到所在網段：IPv4 取 /24，IPv6 取 /48，例如 `203.0.113.7` 變成 `203.0.113.0`，`2001:db8:1:2::7` 變成 `2001:db8:1::`。各跳保留完整地址，終端裏的表格也顯示完整的目的地址。每跳的每個地址還附帶它自己回包中最短的往返時間，以及它帶上的 MPLS 標籤棧。
+
+### 刪除上傳記錄
+
+上傳還會返回一個 admin key（隨機生成的 UUID）和兩個帶着它的鏈接：管理鏈接在 IPMap 裏用這個 key 打開記錄，刪除命令裏的網關地址用來刪除記錄。
+
+```sh
+curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/<trace ID>?admin-key=<admin key>'
+```
+
+拿到管理鏈接或刪除命令的人都能刪除這條記錄，分享時只發 IPMap 鏈接。`--quiet` 不輸出這兩項。
+
+xmtr 會把每次上傳記到本機的列表裏，包括時間、目標、網關、鏈接和 admin key：
+
+| 系統 | 列表位置 |
+| --- | --- |
+| Linux、FreeBSD、Android | `$XDG_DATA_HOME/xmtr/traces.jsonl`，默認為 `~/.local/share/xmtr/traces.jsonl` |
+| macOS | `~/Library/Application Support/xmtr/traces.jsonl` |
+| Windows | `%APPDATA%\xmtr\traces.jsonl` |
+
+在 Unix 上只有你自己的用户能讀這個文件。大多數 Linux 發行版的 `sudo` 會把 `HOME` 設成 root 的主目錄，所以 `sudo xmtr` 的上傳記在 root 的列表裏，要用 `sudo xmtr traces` 查看。macOS 的 `sudo` 保留 `HOME`，列表仍歸你的用户。列表寫入失敗時，這次運行會輸出一條備註，退出碼不變。
+
+```sh
+xmtr traces                      # 列出上傳記錄，新的在前，附帶鏈接和刪除命令
+xmtr traces --json               # 輸出完整記錄
+xmtr traces delete <TRACE>       # 從網關和列表中刪除這條記錄
+```
+
+`<TRACE>` 可以是 trace ID、IPMap 鏈接或管理鏈接。admin key 依次取自 `--admin-key`、管理鏈接和列表；網關依次取自 `--api`、列表、`XMTR_API` 和默認網關。網關上已經沒有的記錄也會從列表中移除。
 
 ### DNS
 
@@ -290,6 +323,8 @@ IPMap 把探測包離開時的公網地址作為每條路由的起點。如果�
 
 ```text
 用法: xmtr [OPTIONS] <TARGET>...
+      xmtr traces [--json]
+      xmtr traces delete <TRACE> [--admin-key <KEY>] [--api <URL>]
       xmtr self update [--force] [--tag <TAG>]
       xmtr self uninstall
 
@@ -321,7 +356,7 @@ IPMap 把探測包離開時的公網地址作為每條路由的起點。如果�
 
 | 報告 | 何時發送 | 內容 |
 | --- | --- | --- |
-| 使用情況 | 每 100 次帶上傳的運行抽一次，以及每次 `xmtr self` 命令 | xmtr 版本、操作系統及版本（例如 Debian 13）、CPU 架構、命令、耗時、這次運行是否出錯 |
+| 使用情況 | 每 100 次帶上傳或刪除記錄的運行抽一次，以及每次 `xmtr self` 命令 | xmtr 版本、操作系統及版本（例如 Debian 13）、CPU 架構、命令、耗時、這次運行是否出錯 |
 | 錯誤 | 運行出錯後，你回答 yes 時 | 錯誤信息、xmtr 版本、操作系統、CPU 架構 |
 | 崩潰 | 發生 panic 後，你回答 yes 時 | panic 信息及其源碼位置、xmtr 版本、操作系統、CPU 架構 |
 
