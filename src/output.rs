@@ -1,9 +1,39 @@
+use std::fmt::Display;
+use std::io::Write;
+
 use comfy_table::presets::{ASCII_BORDERS_ONLY_CONDENSED, UTF8_BORDERS_ONLY};
 use comfy_table::{CellAlignment, ColumnConstraint, ContentArrangement, Table, Width};
 
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Hop, MplsLabel, Route};
+
+/// Lines for stdout. A reader that went away, such as `xmtr ... | head -1`, closes stdout; later lines
+/// are then dropped instead of aborting the run.
+pub struct Stdout {
+    open: bool,
+}
+
+impl Stdout {
+    pub const fn new() -> Self {
+        Self { open: true }
+    }
+
+    pub fn line(&mut self, text: impl Display) {
+        if self.open && writeln!(std::io::stdout().lock(), "{text}").is_err() {
+            self.open = false;
+        }
+    }
+
+    /// Prints a link to the stored trace on stdout, or on stderr when stdout is closed so the trace
+    /// can still be found.
+    pub fn link(&mut self, text: &str) {
+        self.line(text);
+        if !self.open {
+            eprintln!("{text}");
+        }
+    }
+}
 
 /// The narrowest the Host column gets in a table: an IPv4 address. Below that the hops are listed one
 /// per line instead.
