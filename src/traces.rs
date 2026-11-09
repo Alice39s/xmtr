@@ -16,6 +16,7 @@ use url::Url;
 
 use self::store::Record;
 use crate::cli::{DeleteArgs, TracesArgs, TracesCommand};
+use crate::dns::Dns;
 use crate::model::UploadAccepted;
 use crate::output::Stdout;
 use crate::upload::{self, printable};
@@ -78,8 +79,10 @@ pub fn run(args: &TracesArgs, api: &str) -> Result<()> {
     let path = store::path()?;
     match &args.command {
         Some(TracesCommand::Delete(delete)) => {
-            let agent = upload::proxied_agent(upload::UPLOAD_TIMEOUT);
-            let deletion = self::delete(&agent, &path, delete, api)?;
+            // The gateway is resolved and reached like for an upload.
+            let dns = Dns::new(&delete.dns)?;
+            let connect = |api: &str| upload::agent(api, &dns, upload::UPLOAD_TIMEOUT);
+            let deletion = self::delete(connect, &path, delete, api)?;
             Stdout::new().line(deletion);
         }
         Some(TracesCommand::List(_)) | None => list(&path, args.json())?,
@@ -220,10 +223,15 @@ impl Display for Deletion {
     }
 }
 
-/// Deletes the trace `args` names from its gateway and from the list at `path`. The admin key
-/// comes from `--admin-key`, the admin link or the list, the gateway from `--api`, the list or
-/// `api`.
-fn delete(agent: &Agent, path: &Path, args: &DeleteArgs, api: &str) -> Result<Deletion> {
+/// Deletes the trace `args` names from its gateway and from the list at `path`, with the agent
+/// `connect` makes for the gateway. The admin key comes from `--admin-key`, the admin link or the
+/// list, the gateway from `--api`, the list or `api`.
+fn delete(
+    connect: impl FnOnce(&str) -> Result<Agent>,
+    path: &Path,
+    args: &DeleteArgs,
+    api: &str,
+) -> Result<Deletion> {
     let named = named(&args.trace)?;
     let given_key = args.admin_key.clone().or(named.admin_key);
     // With the admin key and the gateway on the command line the list is not needed; a list that
@@ -257,7 +265,7 @@ fn delete(agent: &Agent, path: &Path, args: &DeleteArgs, api: &str) -> Result<De
         .as_deref()
         .or(record.map(|record| record.api.as_str()))
         .unwrap_or(api);
-    let on_gateway = upload::delete(agent, api, &named.id, &admin_key)?;
+    let on_gateway = upload::delete(&connect(api)?, api, &named.id, &admin_key)?;
     let listed = list.is_some()
         && store::remove(path, &named.id).with_context(|| {
             let done = if on_gateway { "deleted" } else { "not found" };
@@ -458,11 +466,17 @@ https://xmsl.dev/xmtr/1-a",
         (api, server)
     }
 
+    /// Connects to the test servers on this machine whatever the proxy settings.
+    fn direct(_: &str) -> Result<Agent> {
+        Ok(upload::direct_agent())
+    }
+
     fn delete_args(trace: &str, admin_key: Option<&str>, api: Option<&str>) -> DeleteArgs {
         DeleteArgs {
             trace: trace.to_owned(),
             admin_key: admin_key.map(str::to_owned),
             api: api.map(str::to_owned),
+            dns: crate::dns::DnsSpec::Auto,
         }
     }
 
@@ -476,7 +490,7 @@ https://xmsl.dev/xmtr/1-a",
         store::append(&path, &record("1-a")).unwrap();
         store::append(&path, &listed).unwrap();
         let deletion = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(&format!("https://xmsl.dev/xmtr/{ID}"), None, None),
             "http://192.0.2.1:9",
@@ -515,7 +529,7 @@ https://xmsl.dev/xmtr/1-a",
         let path = dir.path().join("traces.jsonl");
         let (api, server) = gateway("200 OK", r#"{"ok":true}"#);
         let deletion = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(accepted().admin_url.as_deref().unwrap(), None, Some(&api)),
             "http://192.0.2.1:9",
@@ -533,20 +547,14 @@ https://xmsl.dev/xmtr/1-a",
         let mut listed = record(ID);
         listed.api = api.clone();
         store::append(&path, &listed).unwrap();
-        let deletion = delete(
-            &upload::direct_agent(),
-            &path,
-            &delete_args(ID, None, None),
-            &api,
-        )
-        .unwrap();
+        let deletion = delete(direct, &path, &delete_args(ID, None, None), &api).unwrap();
         assert!(!deletion.on_gateway && deletion.listed);
         assert_eq!(store::read(&path).unwrap(), store::List::default());
         server.join().unwrap();
 
         let (api, server) = gateway("404 Not Found", r#"{"title":"Not Found"}"#);
         let error = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(ID, Some(KEY), Some(&format!("{api}/\u{1b}[2J"))),
             &api,
@@ -567,13 +575,8 @@ https://xmsl.dev/xmtr/1-a",
         store::append(&path, &record(ID)).unwrap();
         for content_type in ["text/plain; charset=UTF-8", "text/html"] {
             let (api, server) = server("404 Not Found", content_type, "404 Not Found");
-            let error = delete(
-                &upload::direct_agent(),
-                &path,
-                &delete_args(ID, None, Some(&api)),
-                &api,
-            )
-            .unwrap_err();
+            let error =
+                delete(direct, &path, &delete_args(ID, None, Some(&api)), &api).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "deletion rejected with HTTP 404: Not Found"
@@ -587,13 +590,7 @@ https://xmsl.dev/xmtr/1-a",
             "Application/Problem+JSON; charset=utf-8",
             r#"{"title":"Not Found"}"#,
         );
-        let deletion = delete(
-            &upload::direct_agent(),
-            &path,
-            &delete_args(ID, None, Some(&api)),
-            &api,
-        )
-        .unwrap();
+        let deletion = delete(direct, &path, &delete_args(ID, None, Some(&api)), &api).unwrap();
         assert!(!deletion.on_gateway && deletion.listed);
         server.join().unwrap();
     }
@@ -608,7 +605,7 @@ https://xmsl.dev/xmtr/1-a",
         );
         store::append(&path, &record(ID)).unwrap();
         let error = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(ID, Some("00000000-0000-4000-8000-000000000000"), Some(&api)),
             &api,
@@ -637,7 +634,7 @@ https://xmsl.dev/xmtr/1-a",
         std::fs::write(&path, "{not json\n").unwrap();
         store::append(&path, &listed).unwrap();
         let deletion = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(ID, None, None),
             "http://192.0.2.1:9",
@@ -657,7 +654,7 @@ https://xmsl.dev/xmtr/1-a",
         let (api, server) = gateway("200 OK", r#"{"ok":true}"#);
         let admin_link = accepted().admin_url.unwrap();
         let deletion = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(&admin_link, None, Some(&api)),
             "http://192.0.2.1:9",
@@ -667,7 +664,7 @@ https://xmsl.dev/xmtr/1-a",
         server.join().unwrap();
 
         let error = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(&admin_link, None, None),
             "http://192.0.2.1:9",
@@ -681,7 +678,7 @@ https://xmsl.dev/xmtr/1-a",
         let dir = scratch();
         let path = dir.path().join("traces.jsonl");
         let error = delete(
-            &upload::direct_agent(),
+            direct,
             &path,
             &delete_args(ID, None, None),
             "http://192.0.2.1:9",

@@ -103,10 +103,14 @@ pub fn proxy_host() -> Option<String> {
     ureq::Proxy::try_from_env().map(|proxy| proxy.host().to_owned())
 }
 
-fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
+/// An agent for requests to the gateway at `url`, which resolves its host with `dns` and connects
+/// through the proxy from the environment, if any.
+pub fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
     let config = config(timeout);
     let connector = connector();
-    let uri: Uri = url.parse().with_context(|| format!("parsing {url}"))?;
+    let uri: Uri = url
+        .parse()
+        .with_context(|| format!("parsing {}", printable(url)))?;
     let remote_proxy = config
         .proxy()
         .is_some_and(|proxy| !proxy.is_no_proxy(&uri) && !proxy.resolve_target());
