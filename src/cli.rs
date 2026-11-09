@@ -257,16 +257,35 @@ pub const fn interactive(cli: &Cli, stdin_terminal: bool, stderr_terminal: bool)
     stdin_terminal && stderr_terminal && !json && !cli.quiet
 }
 
-/// Option combinations that each parse on their own but cannot produce a route together.
+/// The subcommands in the order of [`Command`], each with a command that gives it options of its own.
+const SUBCOMMANDS: [(&str, &str); 2] = [
+    ("self", "xmtr self update --force"),
+    ("traces", "xmtr traces delete --dns quad9 <TRACE>"),
+];
+
+/// Arguments that each parse on their own but do not make a run: a subcommand read as the first
+/// target, or a time limit that no round fits in.
 pub fn conflict(cli: &Cli) -> Option<String> {
-    // trippy reports a round only when it ends, after at least one interval.
-    (cli.interval >= cli.time_limit).then(|| {
-        format!(
-            "--time-limit {} must be longer than --interval {}; a round takes at least one interval",
-            humantime::format_duration(cli.time_limit),
-            humantime::format_duration(cli.interval)
-        )
+    subcommand_as_target(cli).or_else(|| {
+        // trippy reports a round only when it ends, after at least one interval.
+        (cli.interval >= cli.time_limit).then(|| {
+            format!(
+                "--time-limit {} must be longer than --interval {}; a round takes at least one interval",
+                humantime::format_duration(cli.time_limit),
+                humantime::format_duration(cli.interval)
+            )
+        })
     })
+}
+
+/// Options in front of a subcommand make clap read the subcommand and its arguments as targets,
+/// so `xmtr --dns quad9 traces delete <TRACE>` would trace hosts named `traces` and `delete`.
+fn subcommand_as_target(cli: &Cli) -> Option<String> {
+    let first = cli.targets.first()?;
+    let (name, example) = SUBCOMMANDS.iter().find(|(name, _)| name == first)?;
+    Some(format!(
+        "{name} is a subcommand and must come before any option; put its options after it, such as {example}"
+    ))
 }
 
 fn pin(value: &str) -> Result<String, String> {
@@ -283,6 +302,8 @@ fn pin(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
+
     use super::*;
 
     #[test]
@@ -341,6 +362,30 @@ mod tests {
         assert!(parse(&["--dns", "quad9"]).is_err());
         assert!(parse(&["--json", "delete", "1"]).is_err());
         assert!(parse(&["delete"]).is_err());
+    }
+
+    #[test]
+    fn rejects_a_subcommand_given_as_the_first_target() {
+        let command = Cli::command();
+        let names: Vec<&str> = command
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect();
+        assert_eq!(names, SUBCOMMANDS.map(|(name, _)| name));
+        let parse = |args: &[&str]| Cli::try_parse_from([&["xmtr"], args].concat()).unwrap();
+        let traces = parse(&["--dns", "quad9", "traces", "delete", "1-a"]);
+        assert!(traces.command.is_none());
+        assert_eq!(
+            conflict(&traces).as_deref(),
+            Some(
+                "traces is a subcommand and must come before any option; put its options after it, such as xmtr traces delete --dns quad9 <TRACE>"
+            )
+        );
+        let manage = conflict(&parse(&["--no-rdns", "self", "update"])).unwrap();
+        assert!(manage.starts_with("self is a subcommand"), "{manage}");
+        // Only the first target can be a misplaced subcommand, and a subcommand in its place parses.
+        assert_eq!(conflict(&parse(&["--no-rdns", "1.1.1.1", "traces"])), None);
+        assert_eq!(conflict(&parse(&["traces", "delete", "1-a"])), None);
     }
 
     #[test]

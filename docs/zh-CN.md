@@ -184,6 +184,8 @@ xmtr traces                            # 列出本机上传过的记录，新的
 xmtr traces delete <trace ID>          # 删除一条上传记录
 ```
 
+子命令要写在最前面，它的选项写在子命令之后，例如 `xmtr traces delete --dns quad9 <TRACE>`。选项写在 `traces` 或 `self` 前面时，子命令会被当成要追踪的目标，所以 xmtr 会直接报错，退出码为 2。
+
 全部选项见[选项](#选项)。
 
 ### 一次运行的过程
