@@ -1,5 +1,5 @@
-//! The result panel printed when a run ends: the finished step line, the IPMap link set apart at
-//! the top, notes, then every route as a table.
+//! The result panel printed when a run ends: the finished step line, the IPMap link, the admin
+//! link and the delete command set apart at the top, notes, then every route as a table.
 
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -9,6 +9,7 @@ use super::theme::{CALLOUT, INDENT, border_text, callout, muted, paint, palette,
 use super::{Options, progress, steps};
 use crate::board::State;
 use crate::model::{Hop, Route, UploadAccepted};
+use crate::traces;
 
 #[derive(Debug)]
 pub enum Upload {
@@ -32,8 +33,8 @@ pub struct Rendered {
     pub width: u16,
     pub top_right: Line<'static>,
     pub bottom_right: Line<'static>,
-    /// The link, when it is wider than the panel and goes on its own line below it.
-    pub link_below: Option<String>,
+    /// Links wider than the panel, each on its own line below it.
+    pub below: Vec<Line<'static>>,
 }
 
 impl Rendered {
@@ -343,24 +344,43 @@ fn route_title(route: &Route) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The callout at the top: the link when the upload worked, otherwise what happened to the upload.
-fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Option<String>) {
+/// Cells a callout line needs for `text`.
+fn callout_width(text: &str) -> usize {
+    INDENT.len() + CALLOUT.chars().count() + text.chars().count()
+}
+
+/// The admin link and the delete command: muted labels, values in the accent color.
+fn admin_spans(accepted: &UploadAccepted) -> Vec<Vec<Span<'static>>> {
+    traces::admin_lines(accepted)
+        .into_iter()
+        .map(|(label, value)| vec![muted(label), paint(value, palette().accent)])
+        .collect()
+}
+
+/// The callout at the top: the links when the upload worked, otherwise what happened to the
+/// upload. Also returns the lines too wide for the panel.
+fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     let reached = summary.routes.iter().filter(|route| route.reached).count();
     let routes = summary.routes.len();
     let noun = if routes == 1 { "route" } else { "routes" };
     let counts = muted(format!(" · {routes} {noun} · {reached} reached"));
+    let text_width = inner.saturating_sub(INDENT.len() + CALLOUT.chars().count());
     match &summary.upload {
         Upload::Accepted(accepted) => {
-            let fits =
-                CALLOUT.chars().count() + INDENT.len() + accepted.url.chars().count() <= inner;
-            let link = if fits {
+            let accent = palette().accent;
+            let mut below = Vec::new();
+            let link = if callout_width(&accepted.url) <= inner {
                 Span::styled(
                     accepted.url.clone(),
                     Style::new()
-                        .fg(palette().accent)
+                        .fg(accent)
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 )
             } else {
+                below.push(Line::from(Span::styled(
+                    accepted.url.clone(),
+                    Style::new().fg(accent).add_modifier(Modifier::UNDERLINED),
+                )));
                 muted("The link is printed below this panel.")
             };
             let mut id = vec![muted("trace-id "), Span::raw(accepted.id.clone())];
@@ -368,32 +388,56 @@ fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Option<Stri
                 id.push(muted(" · "));
                 id.push(paint("readers need your PIN", palette().warn));
             }
-            let lines = vec![
-                callout(palette().accent, vec!["Uploaded to IPMap".bold(), counts]),
-                callout(palette().accent, vec![link]),
-                callout(palette().accent, id),
+            let mut lines = vec![
+                callout(accent, vec!["Uploaded to IPMap".bold(), counts]),
+                callout(accent, vec![link]),
+                callout(accent, id),
             ];
-            (lines, (!fits).then(|| accepted.url.clone()))
+            let admin = admin_spans(accepted);
+            if !admin.is_empty() {
+                let fits = admin.iter().all(|spans| {
+                    let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+                    callout_width(&text) <= inner
+                });
+                if fits {
+                    lines.extend(admin.into_iter().map(|spans| callout(accent, spans)));
+                } else {
+                    lines.extend(
+                        wrapped(
+                            "The admin link and delete command are printed below this panel.",
+                            text_width,
+                        )
+                        .into_iter()
+                        .map(|part| callout(accent, vec![muted(part)])),
+                    );
+                    below.extend(admin.into_iter().map(Line::from));
+                }
+                lines.extend(
+                    wrapped(traces::ADMIN_WARNING, text_width)
+                        .into_iter()
+                        .map(|part| callout(accent, vec![paint(part, palette().warn)])),
+                );
+            }
+            (lines, below)
         }
         Upload::Skipped => (
             vec![callout(
                 palette().muted,
                 vec!["Kept on this machine".bold(), counts],
             )],
-            None,
+            Vec::new(),
         ),
         Upload::Failed(error) => {
             let mut lines = vec![callout(
                 palette().bad,
                 vec![paint("Upload failed", palette().bad).bold(), counts],
             )];
-            let width = inner.saturating_sub(INDENT.len() + CALLOUT.chars().count());
             lines.extend(
-                wrapped(error, width)
+                wrapped(error, text_width)
                     .into_iter()
                     .map(|part| callout(palette().bad, vec![muted(part)])),
             );
-            (lines, None)
+            (lines, Vec::new())
         }
     }
 }
@@ -408,17 +452,21 @@ pub fn render(
 ) -> Rendered {
     let failed = matches!(summary.upload, Upload::Failed(_));
     let steps = steps::steps(state, options, failed);
-    let link = match &summary.upload {
-        Upload::Accepted(accepted) => {
-            accepted.url.chars().count() + INDENT.len() + CALLOUT.chars().count()
-        }
+    // The panel widens up to the terminal to hold the links, with one spare cell like the tables.
+    let links = match &summary.upload {
+        Upload::Accepted(accepted) => traces::admin_lines(accepted)
+            .into_iter()
+            .map(|(label, value)| callout_width(&(label + &value)))
+            .chain([callout_width(&accepted.url)])
+            .max()
+            .map_or(0, |widest| widest + 1),
         _ => 0,
     };
     // One spare cell keeps the last column off the border.
     let wide = Table::fit(&summary.routes, usize::MAX / 2).width() + 1;
     let wanted = [
         steps::width(&steps),
-        link,
+        links,
         wide,
         usize::from(progress::MIN_WIDTH) - 2,
     ]
@@ -430,7 +478,7 @@ pub fn render(
     let table = Table::fit(&summary.routes, inner.saturating_sub(1));
 
     let mut lines = vec![steps::render(&steps, inner, 0), Line::raw("")];
-    let (headline, link_below) = headline(summary, inner);
+    let (headline, below) = headline(summary, inner);
     lines.extend(headline);
     if !summary.notes.is_empty() {
         lines.push(Line::raw(""));
@@ -463,7 +511,7 @@ pub fn render(
         width,
         top_right: border_text(&format!("{elapsed:.1}s")),
         bottom_right,
-        link_below,
+        below,
     }
 }
 
@@ -564,6 +612,9 @@ mod tests {
             id: "103115083070058496-nBjPEnny".to_owned(),
             pin: true,
             url: URL.to_owned(),
+            admin_key: None,
+            admin_url: None,
+            admin_api_url: None,
         })
     }
 
@@ -594,7 +645,71 @@ mod tests {
             lines.last().is_some_and(|line| line.contains(URL)),
             "{screen}"
         );
-        assert_eq!(rendered.link_below, None);
+        assert!(rendered.below.is_empty());
+    }
+
+    fn text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn with_admin_links() -> Upload {
+        Upload::Accepted(UploadAccepted {
+            pin: true,
+            ..traces::tests::accepted()
+        })
+    }
+
+    #[test]
+    fn lists_the_admin_link_and_delete_command_under_the_trace_id() {
+        let (screen, rendered) = draw(&summary(with_admin_links()), 200);
+        let lines: Vec<&str> = screen.lines().collect();
+        let admin = traces::admin_text(&traces::tests::accepted());
+        assert!(
+            lines[5].contains("trace-id 103115083070058496-nBjPEnny"),
+            "{screen}"
+        );
+        assert!(
+            lines[6].contains(&format!("\u{258d} {}", admin[0])),
+            "{screen}"
+        );
+        assert!(
+            lines[7].contains(&format!("\u{258d} {}", admin[1])),
+            "{screen}"
+        );
+        assert!(lines[8].contains(traces::ADMIN_WARNING), "{screen}");
+        // The panel widens to the delete command, the widest line, and one spare cell.
+        assert_eq!(usize::from(rendered.width), admin[1].chars().count() + 6);
+        assert!(rendered.below.is_empty());
+    }
+
+    #[test]
+    fn prints_admin_lines_too_wide_for_the_panel_below_it() {
+        let (screen, rendered) = draw(&summary(with_admin_links()), 120);
+        let admin = traces::admin_text(&traces::tests::accepted());
+        assert!(screen.contains(URL), "{screen}");
+        assert!(
+            screen.contains("The admin link and delete command are printed below"),
+            "{screen}"
+        );
+        assert!(screen.contains(traces::ADMIN_WARNING), "{screen}");
+        assert!(!screen.contains("admin-key"), "{screen}");
+        assert_eq!(text(&rendered.below), admin[..2]);
+
+        let (narrow, rendered) = draw(&summary(with_admin_links()), 53);
+        assert!(narrow.contains("The link is printed below"), "{narrow}");
+        assert!(narrow.contains("Anyone with the admin link"), "{narrow}");
+        assert_eq!(
+            text(&rendered.below),
+            [URL.to_owned(), admin[0].clone(), admin[1].clone()]
+        );
     }
 
     #[test]
@@ -605,7 +720,7 @@ mod tests {
         assert!(!screen.contains("StDev"), "{screen}");
         assert!(screen.contains("Avg"), "{screen}");
         assert!(screen.contains("printed below"), "{screen}");
-        assert_eq!(rendered.link_below.as_deref(), Some(URL));
+        assert_eq!(text(&rendered.below), [URL]);
     }
 
     #[test]
