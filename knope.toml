@@ -29,6 +29,14 @@ versioned_files = [
   { path = "docs/zh-MO.md", regex = '--version v(?<version>\d+\.\d+\.\d+)' },
 ]
 changelog = "CHANGELOG.md"
+# Notes open a release, before the sections knope lists by default. Change files of type `note`
+# go there and do not change the version.
+extra_changelog_sections = [
+  { name = "Notes", types = ["note"] },
+  { name = "Breaking Changes", types = ["major"] },
+  { name = "Features", types = ["minor"] },
+  { name = "Fixes", types = ["patch"] },
+]
 
 [changes]
 # Release notes come from change files only; commit messages stay free of changelog duty.
