@@ -235,6 +235,7 @@ pub mod tests {
 
     use super::store::tests::{record, scratch};
     use super::*;
+    use crate::model::Shell;
 
     pub const ID: &str = "103115083070058496-nBjPEnny";
     pub const KEY: &str = "1b4e28ba-2fa1-4d2b-883f-0016d3cca427";
@@ -255,15 +256,19 @@ pub mod tests {
         }
     }
 
+    /// The delete line of [`accepted`], quoted for the shells of this system.
+    fn delete_line() -> String {
+        let url = format!("https://stage-info-api.xmsl.dev/api/v1/traces/{ID}?admin-key={KEY}");
+        format!("delete   {}", Shell::NATIVE.delete_command(&url))
+    }
+
     #[test]
     fn lines_up_the_admin_link_and_delete_command_with_the_trace_id() {
         assert_eq!(
             admin_text(&accepted(), true),
             [
                 format!("admin    https://xmsl.dev/ipmap?plat=xmtr&trace-id={ID}&admin-key={KEY}"),
-                format!(
-                    "delete   curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/{ID}?admin-key={KEY}'"
-                ),
+                delete_line(),
                 "Anyone with the admin link can delete this trace. Run xmtr traces to see these links again."
                     .to_owned(),
             ]
@@ -301,11 +306,12 @@ pub mod tests {
 trace-id {ID}
 https://xmsl.dev/xmtr/{ID}
 admin    https://xmsl.dev/ipmap?plat=xmtr&trace-id={ID}&admin-key={KEY}
-delete   curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/{ID}?admin-key={KEY}'
+{}
 
 2026-11-09T04:12:33Z  example.com  PIN
 trace-id 1-a
-https://xmsl.dev/xmtr/1-a"
+https://xmsl.dev/xmtr/1-a",
+                delete_line()
             )
         );
     }
