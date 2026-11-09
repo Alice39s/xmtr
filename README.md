@@ -294,7 +294,7 @@ xmtr adds every upload to a list on this machine, with the time, the targets, th
 | macOS | `~/Library/Application Support/xmtr/traces.jsonl` |
 | Windows | `%APPDATA%\xmtr\traces.jsonl` |
 
-On Unix only your user can read the file. `sudo` on most Linux distributions sets `HOME` to root's home, so uploads from `sudo xmtr` go to root's list, which `sudo xmtr traces` shows. macOS keeps `HOME` under `sudo`, and the list stays with your user. When the list cannot be written, the run prints a note and keeps its exit status.
+On Unix only your user can read the file. Uploads from `sudo xmtr` go to root's list, which `sudo xmtr traces` shows: as root, xmtr takes root's home directory from the user database and ignores `HOME` and `XDG_DATA_HOME`. When the list cannot be written, the run prints a note and keeps its exit status.
 
 ```sh
 xmtr traces                      # the uploads, newest first, with their links and delete commands

@@ -1,5 +1,6 @@
 //! The list of traces uploaded from this machine: one JSON record per line in `xmtr/traces.jsonl`
-//! under the user's data directory, oldest first. On Unix only its owner can read the file.
+//! under the data directory of the user xmtr runs as, oldest first. On Unix only its owner can
+//! read the file.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -25,10 +26,87 @@ pub struct Record {
     pub targets: Vec<String>,
 }
 
-/// `xmtr/traces.jsonl` in the user's data directory.
+/// `xmtr/traces.jsonl` in the data directory of the user xmtr runs as.
 pub fn path() -> Result<PathBuf> {
-    let data = dirs::data_dir().context("locating the user's data directory")?;
-    Ok(data.join("xmtr").join("traces.jsonl"))
+    Ok(data_dir()?.join("xmtr").join("traces.jsonl"))
+}
+
+/// The data directory of the user xmtr runs as. `sudo` can keep the `HOME` and `XDG_DATA_HOME`
+/// of the user who started it, a directory that user controls, so root ignores both and takes its
+/// home directory from the user database.
+#[cfg(unix)]
+fn data_dir() -> Result<PathBuf> {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    data_dir_for(euid, root_home, dirs::data_dir)
+}
+
+#[cfg(not(unix))]
+fn data_dir() -> Result<PathBuf> {
+    dirs::data_dir().context("locating the user's data directory")
+}
+
+/// The data directory for a process running as `euid`: below the home directory `root_home`
+/// finds for root, otherwise the one `user_data_dir` finds.
+#[cfg(unix)]
+fn data_dir_for(
+    euid: libc::uid_t,
+    root_home: impl FnOnce() -> Result<PathBuf>,
+    user_data_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf> {
+    if euid == 0 {
+        return root_home().map(|home| default_data_dir(&home));
+    }
+    user_data_dir().context("locating the user's data directory")
+}
+
+/// The data directory below `home` without environment variables: `Library/Application Support`
+/// on macOS and the XDG default `.local/share` on the other systems.
+#[cfg(unix)]
+fn default_data_dir(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support")
+    } else {
+        home.join(".local").join("share")
+    }
+}
+
+/// Root's home directory from the user database.
+#[cfg(unix)]
+fn root_home() -> Result<PathBuf> {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut size = 1024;
+    loop {
+        let mut buffer: Vec<libc::c_char> = vec![0; size];
+        // SAFETY: an all-zero passwd is a valid value for getpwuid_r to fill in.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found = std::ptr::null_mut();
+        // SAFETY: entry, buffer and found outlive the call, and the length is the buffer's.
+        let status = unsafe {
+            libc::getpwuid_r(0, &mut entry, buffer.as_mut_ptr(), buffer.len(), &mut found)
+        };
+        match status {
+            0 if found.is_null() || entry.pw_dir.is_null() => {
+                anyhow::bail!("the user database has no home directory for root")
+            }
+            0 => {
+                // SAFETY: on success pw_dir points to a NUL-terminated string inside buffer.
+                let home = unsafe { CStr::from_ptr(entry.pw_dir) };
+                anyhow::ensure!(
+                    !home.is_empty(),
+                    "the user database has no home directory for root"
+                );
+                return Ok(PathBuf::from(OsStr::from_bytes(home.to_bytes())));
+            }
+            libc::ERANGE if size < 1 << 20 => size *= 2,
+            error => {
+                return Err(io::Error::from_raw_os_error(error))
+                    .context("looking up root's home directory");
+            }
+        }
+    }
 }
 
 fn directory(path: &Path) -> &Path {
@@ -58,8 +136,7 @@ pub fn append(path: &Path, record: &Record) -> Result<()> {
         .append(true)
         .open(path)
         .and_then(|mut file| file.write_all(line(record).as_bytes()))
-        .with_context(|| format!("writing {}", path.display()))?;
-    return_to_owner(path)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// The records in the list at `path`, oldest first; none when the file does not exist yet.
@@ -98,41 +175,7 @@ pub fn remove(path: &Path, id: &str) -> Result<bool> {
         .with_context(|| format!("writing {}", file.path().display()))?;
     file.persist(path)
         .with_context(|| format!("replacing {}", path.display()))?;
-    return_to_owner(path)?;
     Ok(true)
-}
-
-/// `sudo` keeps `HOME` on macOS, so a run as root writes the list into the data directory of the
-/// user who started it. The list and its directory are then given to the owner of the data
-/// directory, so the user's runs without `sudo` can still read and extend them.
-#[cfg(unix)]
-fn return_to_owner(path: &Path) -> Result<()> {
-    use std::os::unix::fs::{MetadataExt, chown};
-
-    let dir = directory(path);
-    let Some(data) = dir.parent() else {
-        return Ok(());
-    };
-    let owner = fs::metadata(data).with_context(|| format!("reading {}", data.display()))?;
-    let written = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
-    if written.uid() != 0 || owner.uid() == 0 {
-        return Ok(());
-    }
-    for target in [dir, path] {
-        chown(target, Some(owner.uid()), Some(owner.gid())).with_context(|| {
-            format!(
-                "giving {} to the owner of {}",
-                target.display(),
-                data.display()
-            )
-        })?;
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn return_to_owner(_: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -163,6 +206,27 @@ pub mod tests {
             api: "https://stage-info-api.xmsl.dev".to_owned(),
             targets: vec!["1.1.1.1".to_owned(), "cloudflare.com".to_owned()],
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_uses_its_own_data_directory() {
+        let user = || Some(PathBuf::from("/home/someone/.local/share"));
+        let root = data_dir_for(0, || Ok(PathBuf::from("/var/root")), || unreachable!()).unwrap();
+        let expected = if cfg!(target_os = "macos") {
+            "/var/root/Library/Application Support"
+        } else {
+            "/var/root/.local/share"
+        };
+        assert_eq!(root, Path::new(expected));
+        assert_eq!(
+            data_dir_for(501, || unreachable!(), user).unwrap(),
+            Path::new("/home/someone/.local/share")
+        );
+        let missing = data_dir_for(0, || anyhow::bail!("no root entry"), user).unwrap_err();
+        assert_eq!(missing.to_string(), "no root entry");
+        assert!(data_dir_for(501, || unreachable!(), || None).is_err());
+        assert!(root_home().unwrap().is_absolute());
     }
 
     #[test]
