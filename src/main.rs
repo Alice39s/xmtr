@@ -45,7 +45,9 @@ struct Report {
     unanswered: usize,
     body: model::Upload,
     upload: Option<Result<model::UploadAccepted>>,
-    /// Why the accepted upload is missing from the trace list.
+    /// True when the trace list holds the accepted upload.
+    listed: bool,
+    /// Why adding the accepted upload to the trace list failed.
     unlisted: Option<anyhow::Error>,
 }
 
@@ -140,19 +142,24 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
         }
         result
     });
-    let unlisted = match &upload {
-        Some(Ok(accepted)) => traces::save(accepted, &cli.api, &cli.targets).err(),
-        _ => None,
+    // Root without an entry in the user database has no list; that is not a failure and gets no note.
+    let (listed, unlisted) = match &upload {
+        Some(Ok(accepted)) => match traces::save(accepted, &cli.api, &cli.targets) {
+            Ok(listed) => (listed, None),
+            Err(error) => {
+                telemetry::capture(&error);
+                (false, Some(error))
+            }
+        },
+        _ => (false, None),
     };
-    if let Some(error) = &unlisted {
-        telemetry::capture(error);
-    }
     Ok(Report {
         skipped: plan.skipped,
         failures,
         unanswered,
         body,
         upload,
+        listed,
         unlisted,
     })
 }
@@ -210,7 +217,6 @@ fn report(cli: &Cli, console: Console, report: Report) -> Result<ExitCode> {
     if cli.json {
         stdout.line(serde_json::to_string_pretty(&report.body)?);
     }
-    let listed = report.unlisted.is_none();
     match report.upload {
         None => Ok(ExitCode::SUCCESS),
         Some(Ok(accepted)) => {
@@ -222,7 +228,7 @@ fn report(cli: &Cli, console: Console, report: Report) -> Result<ExitCode> {
                 if accepted.pin {
                     stdout.line("Readers also need the PIN you set.");
                 }
-                for line in traces::admin_text(&accepted, listed) {
+                for line in traces::admin_text(&accepted, report.listed) {
                     stdout.link(&line);
                 }
             }
@@ -261,7 +267,7 @@ fn show_result(cli: &Cli, console: Console, live: Live, report: Report) -> Resul
         Some(Ok(trace)) => (
             live::Upload::Accepted {
                 trace,
-                listed: report.unlisted.is_none(),
+                listed: report.listed,
             },
             ExitCode::SUCCESS,
         ),

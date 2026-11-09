@@ -80,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bas
 | <img src="../.github/assets/nixos.svg" width="20" alt=""> | Nix | `nix run github:Alice39s/xmtr -- 1.1.1.1`，或 `nix profile install github:Alice39s/xmtr` |
 | <img src="../.github/assets/docker.svg" width="20" alt=""> | Docker | `docker run --rm ghcr.io/alice39s/xmtr 1.1.1.1` |
 
-npm 包和 PyPI wheel 裏的可執行文件與 release 壓縮包裏的相同；npm 會按本機系統選用對應的 `@xmtr/<platform>` 包。Docker 鏡像裏只有靜態鏈接的可執行文件，提供 amd64、arm64、armv7、armv6、386、riscv64 和 loong64 版本。Docker 默認允許容器使用原始套接字；Podman 需要加 `--cap-add NET_RAW`。
+npm 包和 PyPI wheel 裏的可執行文件與 release 壓縮包裏的相同；npm 會按本機系統選用對應的 `@xmtr/<platform>` 包。Docker 鏡像裏只有靜態鏈接的可執行文件和寫有 root 條目的 `/etc/passwd`，提供 amd64、arm64、armv7、armv6、386、riscv64 和 loong64 版本。Docker 默認允許容器使用原始套接字；Podman 需要加 `--cap-add NET_RAW`。
 
 ### Linux 軟件源
 
@@ -294,7 +294,7 @@ xmtr 會把每次上傳記到本機的列表裏，包括時間、目標、網關
 | macOS | `~/Library/Application Support/xmtr/traces.jsonl` |
 | Windows | `%APPDATA%\xmtr\traces.jsonl` |
 
-在 Unix 上只有你自己的用户能讀這個文件。`sudo xmtr` 的上傳記在 root 的列表裏，用 `sudo xmtr traces` 查看：以 root 運行時，xmtr 從用户數據庫讀取 root 的主目錄，不使用 `HOME` 和 `XDG_DATA_HOME`。列表寫入失敗時，這次運行會輸出一條備註，退出碼不變。
+在 Unix 上只有你自己的用户能讀這個文件。`sudo xmtr` 的上傳記在 root 的列表裏，用 `sudo xmtr traces` 查看：以 root 運行時，xmtr 從用户數據庫讀取 root 的主目錄，不使用 `HOME` 和 `XDG_DATA_HOME`。用户數據庫裏沒有 root 的條目時（例如容器裏沒有 `/etc/passwd`），xmtr 不保存列表：`xmtr traces` 會説明原因，`xmtr traces delete` 從 `--admin-key` 或管理鏈接取管理密鑰。Docker 鏡像裏有 root 的條目，列表保存在容器裏，加了 `--rm` 時隨容器一起刪除。列表寫入失敗時，這次運行會輸出一條備註，退出碼不變。
 
 ```sh
 xmtr traces                      # 列出上傳記錄，新的在前，附帶鏈接和刪除命令

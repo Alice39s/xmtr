@@ -51,38 +51,43 @@ fn parse(line: &[u8]) -> Option<Record> {
         .and_then(|line| serde_json::from_str(line).ok())
 }
 
-/// `xmtr/traces.jsonl` in the data directory of the user xmtr runs as.
-pub fn path() -> Result<PathBuf> {
-    Ok(data_dir()?.join("xmtr").join("traces.jsonl"))
+/// `xmtr/traces.jsonl` in the data directory of the user xmtr runs as; none when that user is
+/// root and root has no entry in the user database, such as in a container without `/etc/passwd`.
+pub fn path() -> Result<Option<PathBuf>> {
+    Ok(data_dir()?.map(|data| data.join("xmtr").join("traces.jsonl")))
 }
 
 /// The data directory of the user xmtr runs as. `sudo` can keep the `HOME` and `XDG_DATA_HOME`
 /// of the user who started it, a directory that user controls, so root ignores both and takes its
 /// home directory from the user database.
 #[cfg(unix)]
-fn data_dir() -> Result<PathBuf> {
+fn data_dir() -> Result<Option<PathBuf>> {
     // SAFETY: geteuid has no preconditions and cannot fail.
     let euid = unsafe { libc::geteuid() };
     data_dir_for(euid, root_home, dirs::data_dir)
 }
 
 #[cfg(not(unix))]
-fn data_dir() -> Result<PathBuf> {
-    dirs::data_dir().context("locating the user's data directory")
+fn data_dir() -> Result<Option<PathBuf>> {
+    dirs::data_dir()
+        .context("locating the user's data directory")
+        .map(Some)
 }
 
 /// The data directory for a process running as `euid`: below the home directory `root_home`
-/// finds for root, otherwise the one `user_data_dir` finds.
+/// finds for root, none when it finds no entry for root, otherwise the one `user_data_dir` finds.
 #[cfg(unix)]
 fn data_dir_for(
     euid: libc::uid_t,
-    root_home: impl FnOnce() -> Result<PathBuf>,
+    root_home: impl FnOnce() -> Result<Option<PathBuf>>,
     user_data_dir: impl FnOnce() -> Option<PathBuf>,
-) -> Result<PathBuf> {
+) -> Result<Option<PathBuf>> {
     if euid == 0 {
-        return root_home().map(|home| default_data_dir(&home));
+        return Ok(root_home()?.map(|home| default_data_dir(&home)));
     }
-    user_data_dir().context("locating the user's data directory")
+    user_data_dir()
+        .context("locating the user's data directory")
+        .map(Some)
 }
 
 /// The data directory below `home` without environment variables: `Library/Application Support`
@@ -96,12 +101,38 @@ fn default_data_dir(home: &Path) -> PathBuf {
     }
 }
 
-/// Root's home directory from the user database.
+/// What a `getpwuid_r` call found.
 #[cfg(unix)]
-fn root_home() -> Result<PathBuf> {
+#[derive(Debug, PartialEq, Eq)]
+enum Lookup {
+    Found,
+    /// The user database has no entry for the user.
+    Missing,
+    /// The buffer was too small for the entry.
+    Retry,
+    Failed(libc::c_int),
+}
+
+/// Reads the return value `status` of `getpwuid_r` and whether it `found` an entry. POSIX
+/// reports a missing entry as success without one, but C libraries also return ENOENT, ESRCH, EBADF
+/// or EPERM for it (getpwnam(3)); musl returns ENOENT when `/etc/passwd` does not exist.
+#[cfg(unix)]
+fn lookup(status: libc::c_int, found: bool) -> Lookup {
+    match status {
+        0 if found => Lookup::Found,
+        0 | libc::ENOENT | libc::ESRCH | libc::EBADF | libc::EPERM => Lookup::Missing,
+        libc::ERANGE => Lookup::Retry,
+        error => Lookup::Failed(error),
+    }
+}
+
+/// Root's home directory from the user database; none when the database has no entry for root.
+#[cfg(unix)]
+fn root_home() -> Result<Option<PathBuf>> {
     use std::ffi::{CStr, OsStr};
     use std::os::unix::ffi::OsStrExt;
 
+    const NO_HOME: &str = "the user database has no home directory for root";
     let mut size = 1024;
     loop {
         let mut buffer: Vec<libc::c_char> = vec![0; size];
@@ -112,22 +143,18 @@ fn root_home() -> Result<PathBuf> {
         let status = unsafe {
             libc::getpwuid_r(0, &mut entry, buffer.as_mut_ptr(), buffer.len(), &mut found)
         };
-        match status {
-            0 if found.is_null() || entry.pw_dir.is_null() => {
-                anyhow::bail!("the user database has no home directory for root")
-            }
-            0 => {
+        match lookup(status, !found.is_null()) {
+            Lookup::Found => {
+                anyhow::ensure!(!entry.pw_dir.is_null(), NO_HOME);
                 // SAFETY: on success pw_dir points to a NUL-terminated string inside buffer.
                 let home = unsafe { CStr::from_ptr(entry.pw_dir) };
-                anyhow::ensure!(
-                    !home.is_empty(),
-                    "the user database has no home directory for root"
-                );
-                return Ok(PathBuf::from(OsStr::from_bytes(home.to_bytes())));
+                anyhow::ensure!(!home.is_empty(), NO_HOME);
+                return Ok(Some(PathBuf::from(OsStr::from_bytes(home.to_bytes()))));
             }
-            libc::ERANGE if size < 1 << 20 => size *= 2,
-            error => {
-                return Err(io::Error::from_raw_os_error(error))
+            Lookup::Missing => return Ok(None),
+            Lookup::Retry if size < 1 << 20 => size *= 2,
+            Lookup::Retry | Lookup::Failed(_) => {
+                return Err(io::Error::from_raw_os_error(status))
                     .context("looking up root's home directory");
             }
         }
@@ -284,21 +311,45 @@ pub mod tests {
     #[test]
     fn root_uses_its_own_data_directory() {
         let user = || Some(PathBuf::from("/home/someone/.local/share"));
-        let root = data_dir_for(0, || Ok(PathBuf::from("/var/root")), || unreachable!()).unwrap();
+        let root = data_dir_for(
+            0,
+            || Ok(Some(PathBuf::from("/var/root"))),
+            || unreachable!(),
+        );
         let expected = if cfg!(target_os = "macos") {
             "/var/root/Library/Application Support"
         } else {
             "/var/root/.local/share"
         };
-        assert_eq!(root, Path::new(expected));
+        assert_eq!(root.unwrap().as_deref(), Some(Path::new(expected)));
         assert_eq!(
             data_dir_for(501, || unreachable!(), user).unwrap(),
-            Path::new("/home/someone/.local/share")
+            Some(PathBuf::from("/home/someone/.local/share"))
         );
-        let missing = data_dir_for(0, || anyhow::bail!("no root entry"), user).unwrap_err();
-        assert_eq!(missing.to_string(), "no root entry");
+        assert_eq!(data_dir_for(0, || Ok(None), user).unwrap(), None);
+        let failed = data_dir_for(0, || anyhow::bail!("lookup failed"), user).unwrap_err();
+        assert_eq!(failed.to_string(), "lookup failed");
         assert!(data_dir_for(501, || unreachable!(), || None).is_err());
-        assert!(root_home().unwrap().is_absolute());
+        assert!(root_home().unwrap().unwrap().is_absolute());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tells_a_missing_root_entry_from_a_failed_lookup() {
+        assert_eq!(lookup(0, true), Lookup::Found);
+        for status in [0, libc::ENOENT, libc::ESRCH, libc::EBADF, libc::EPERM] {
+            assert_eq!(lookup(status, false), Lookup::Missing, "{status}");
+        }
+        assert_eq!(lookup(libc::ERANGE, false), Lookup::Retry);
+        for status in [
+            libc::EIO,
+            libc::EINTR,
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOMEM,
+        ] {
+            assert_eq!(lookup(status, false), Lookup::Failed(status), "{status}");
+        }
     }
 
     #[test]

@@ -80,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/Alice39s/xmtr/main/install.sh | bas
 | <img src=".github/assets/nixos.svg" width="20" alt=""> | Nix | `nix run github:Alice39s/xmtr -- 1.1.1.1`, or `nix profile install github:Alice39s/xmtr` |
 | <img src=".github/assets/docker.svg" width="20" alt=""> | Docker | `docker run --rm ghcr.io/alice39s/xmtr 1.1.1.1` |
 
-The npm package and the PyPI wheels hold the same binaries as the release archives; npm picks the `@xmtr/<platform>` package for your system. The Docker image holds only the static binary and is built for amd64, arm64, armv7, armv6, 386, riscv64 and loong64. Docker grants raw sockets to containers by default; with Podman add `--cap-add NET_RAW`.
+The npm package and the PyPI wheels hold the same binaries as the release archives; npm picks the `@xmtr/<platform>` package for your system. The Docker image holds only the static binary and an `/etc/passwd` with root's entry, and is built for amd64, arm64, armv7, armv6, 386, riscv64 and loong64. Docker grants raw sockets to containers by default; with Podman add `--cap-add NET_RAW`.
 
 ### Linux package repositories
 
@@ -294,7 +294,7 @@ xmtr adds every upload to a list on this machine, with the time, the targets, th
 | macOS | `~/Library/Application Support/xmtr/traces.jsonl` |
 | Windows | `%APPDATA%\xmtr\traces.jsonl` |
 
-On Unix only your user can read the file. Uploads from `sudo xmtr` go to root's list, which `sudo xmtr traces` shows: as root, xmtr takes root's home directory from the user database and ignores `HOME` and `XDG_DATA_HOME`. When the list cannot be written, the run prints a note and keeps its exit status.
+On Unix only your user can read the file. Uploads from `sudo xmtr` go to root's list, which `sudo xmtr traces` shows: as root, xmtr takes root's home directory from the user database and ignores `HOME` and `XDG_DATA_HOME`. When the user database has no entry for root, such as in a container without `/etc/passwd`, xmtr keeps no list: `xmtr traces` says so, and `xmtr traces delete` takes the admin key from `--admin-key` or the admin link. The Docker image has root's entry and keeps the list in the container, which `--rm` removes with it. When the list cannot be written, the run prints a note and keeps its exit status.
 
 ```sh
 xmtr traces                      # the uploads, newest first, with their links and delete commands

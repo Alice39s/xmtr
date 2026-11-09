@@ -63,15 +63,24 @@ pub fn admin_text(trace: &UploadAccepted, listed: bool) -> Vec<String> {
     lines
 }
 
-/// Adds an accepted upload of `targets` to the gateway at `api` to the list of uploads.
-pub fn save(trace: &UploadAccepted, api: &str, targets: &[String]) -> Result<()> {
+/// Why `xmtr traces` has no list to show: [`store::path`] finds none for root without an entry
+/// in the user database.
+const NO_LIST: &str = "root has no entry in the user database, so xmtr keeps no trace list";
+
+/// Adds an accepted upload of `targets` to the gateway at `api` to the list of uploads; false
+/// when the user xmtr runs as has no list.
+pub fn save(trace: &UploadAccepted, api: &str, targets: &[String]) -> Result<bool> {
+    let Some(path) = store::path()? else {
+        return Ok(false);
+    };
     let record = Record {
         trace: trace.clone(),
         uploaded_at: humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
         api: api.to_owned(),
         targets: targets.to_vec(),
     };
-    store::append(&store::path()?, &record)
+    store::append(&path, &record)?;
+    Ok(true)
 }
 
 /// Runs `xmtr traces`; `api` is the gateway for a trace the list holds no gateway for.
@@ -82,12 +91,23 @@ pub fn run(args: &TracesArgs, api: &str) -> Result<()> {
             // The gateway is resolved and reached like for an upload.
             let dns = Dns::new(&delete.dns)?;
             let connect = |api: &str| upload::agent(api, &dns, upload::UPLOAD_TIMEOUT);
-            let deletion = self::delete(connect, &path, delete, api)?;
+            let deletion = self::delete(connect, path.as_deref(), delete, api)?;
             Stdout::new().line(deletion);
         }
-        Some(TracesCommand::List(_)) | None => list(&path, args.json())?,
+        Some(TracesCommand::List(_)) | None => match &path {
+            Some(path) => list(path, args.json())?,
+            None => no_list(args.json()),
+        },
     }
     Ok(())
+}
+
+/// Says why there is no list; with `json` stdout still holds a JSON document, an empty list.
+fn no_list(json: bool) {
+    eprintln!("{NO_LIST}");
+    if json {
+        Stdout::new().line("[]");
+    }
 }
 
 /// Warns about the lines of the list at `path` that hold no record.
@@ -223,12 +243,12 @@ impl Display for Deletion {
     }
 }
 
-/// Deletes the trace `args` names from its gateway and from the list at `path`, with the agent
-/// `connect` makes for the gateway. The admin key comes from `--admin-key`, the admin link or the
-/// list, the gateway from `--api`, the list or `api`.
+/// Deletes the trace `args` names from its gateway and from the list at `path`, if there is one,
+/// with the agent `connect` makes for the gateway. The admin key comes from `--admin-key`, the
+/// admin link or the list, the gateway from `--api`, the list or `api`.
 fn delete(
     connect: impl FnOnce(&str) -> Result<Agent>,
-    path: &Path,
+    path: Option<&Path>,
     args: &DeleteArgs,
     api: &str,
 ) -> Result<Deletion> {
@@ -236,18 +256,19 @@ fn delete(
     let given_key = args.admin_key.clone().or(named.admin_key);
     // With the admin key and the gateway on the command line the list is not needed; a list that
     // cannot be read then only keeps the trace in it.
-    let list = match store::read(path) {
-        Ok(list) => {
+    let list = match path.map(|path| (path, store::read(path))) {
+        None => None,
+        Some((path, Ok(list))) => {
             warn_unreadable(path, &list);
-            Some(list)
+            Some((path, list))
         }
-        Err(error) if given_key.is_some() && args.api.is_some() => {
+        Some((_, Err(error))) if given_key.is_some() && args.api.is_some() => {
             eprintln!("warning: {error:#}");
             None
         }
-        Err(error) => return Err(error),
+        Some((_, Err(error))) => return Err(error),
     };
-    let record = list.as_ref().and_then(|list| {
+    let record = list.as_ref().and_then(|(_, list)| {
         list.records
             .iter()
             .find(|record| record.trace.id == named.id)
@@ -266,14 +287,16 @@ fn delete(
         .or(record.map(|record| record.api.as_str()))
         .unwrap_or(api);
     let on_gateway = upload::delete(&connect(api)?, api, &named.id, &admin_key)?;
-    let listed = list.is_some()
-        && store::remove(path, &named.id).with_context(|| {
+    let listed = match &list {
+        Some((path, _)) => store::remove(path, &named.id).with_context(|| {
             let done = if on_gateway { "deleted" } else { "not found" };
             format!(
                 "{} {done} on the gateway; removing it from the trace list",
                 named.id
             )
-        })?;
+        })?,
+        None => false,
+    };
     if !on_gateway && !listed {
         bail!(
             "the gateway at {} has no trace {}",
@@ -495,7 +518,7 @@ https://xmsl.dev/xmtr/1-a",
         store::append(&path, &listed).unwrap();
         let deletion = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(&format!("https://xmsl.dev/xmtr/{ID}"), None, None),
             "http://192.0.2.1:9",
         )
@@ -534,7 +557,7 @@ https://xmsl.dev/xmtr/1-a",
         let (api, server) = gateway("200 OK", r#"{"ok":true}"#);
         let deletion = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(accepted().admin_url.as_deref().unwrap(), None, Some(&api)),
             "http://192.0.2.1:9",
         )
@@ -551,7 +574,7 @@ https://xmsl.dev/xmtr/1-a",
         let mut listed = record(ID);
         listed.api = api.clone();
         store::append(&path, &listed).unwrap();
-        let deletion = delete(direct, &path, &delete_args(ID, None, None), &api).unwrap();
+        let deletion = delete(direct, Some(&path), &delete_args(ID, None, None), &api).unwrap();
         assert!(!deletion.on_gateway && deletion.listed);
         assert_eq!(store::read(&path).unwrap(), store::List::default());
         server.join().unwrap();
@@ -559,7 +582,7 @@ https://xmsl.dev/xmtr/1-a",
         let (api, server) = gateway("404 Not Found", r#"{"title":"Not Found"}"#);
         let error = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(ID, Some(KEY), Some(&format!("{api}/\u{1b}[2J"))),
             &api,
         )
@@ -579,8 +602,13 @@ https://xmsl.dev/xmtr/1-a",
         store::append(&path, &record(ID)).unwrap();
         for content_type in ["text/plain; charset=UTF-8", "text/html"] {
             let (api, server) = server("404 Not Found", content_type, "404 Not Found");
-            let error =
-                delete(direct, &path, &delete_args(ID, None, Some(&api)), &api).unwrap_err();
+            let error = delete(
+                direct,
+                Some(&path),
+                &delete_args(ID, None, Some(&api)),
+                &api,
+            )
+            .unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "deletion rejected with HTTP 404: Not Found"
@@ -594,7 +622,13 @@ https://xmsl.dev/xmtr/1-a",
             "Application/Problem+JSON; charset=utf-8",
             r#"{"title":"Not Found"}"#,
         );
-        let deletion = delete(direct, &path, &delete_args(ID, None, Some(&api)), &api).unwrap();
+        let deletion = delete(
+            direct,
+            Some(&path),
+            &delete_args(ID, None, Some(&api)),
+            &api,
+        )
+        .unwrap();
         assert!(!deletion.on_gateway && deletion.listed);
         server.join().unwrap();
     }
@@ -610,7 +644,7 @@ https://xmsl.dev/xmtr/1-a",
         store::append(&path, &record(ID)).unwrap();
         let error = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(ID, Some("00000000-0000-4000-8000-000000000000"), Some(&api)),
             &api,
         )
@@ -639,7 +673,7 @@ https://xmsl.dev/xmtr/1-a",
         store::append(&path, &listed).unwrap();
         let deletion = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(ID, None, None),
             "http://192.0.2.1:9",
         )
@@ -659,7 +693,7 @@ https://xmsl.dev/xmtr/1-a",
         let admin_link = accepted().admin_url.unwrap();
         let deletion = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(&admin_link, None, Some(&api)),
             "http://192.0.2.1:9",
         )
@@ -669,7 +703,7 @@ https://xmsl.dev/xmtr/1-a",
 
         let error = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(&admin_link, None, None),
             "http://192.0.2.1:9",
         )
@@ -678,12 +712,41 @@ https://xmsl.dev/xmtr/1-a",
     }
 
     #[test]
+    fn without_a_list_deletes_only_on_the_gateway() {
+        let (api, server) = gateway("200 OK", r#"{"ok":true}"#);
+        let admin_link = accepted().admin_url.unwrap();
+        let deletion = delete(direct, None, &delete_args(&admin_link, None, None), &api).unwrap();
+        assert_eq!(
+            deletion,
+            Deletion {
+                id: ID.to_owned(),
+                on_gateway: true,
+                listed: false,
+            }
+        );
+        assert_eq!(deletion.to_string(), format!("Deleted {ID}"));
+        assert!(server.join().unwrap().contains(KEY));
+
+        let error = delete(
+            direct,
+            None,
+            &delete_args(ID, None, None),
+            "http://192.0.2.1:9",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("no admin key for {ID}; pass --admin-key or the admin link")
+        );
+    }
+
+    #[test]
     fn needs_an_admin_key_before_asking_the_gateway() {
         let dir = scratch();
         let path = dir.path().join("traces.jsonl");
         let error = delete(
             direct,
-            &path,
+            Some(&path),
             &delete_args(ID, None, None),
             "http://192.0.2.1:9",
         )

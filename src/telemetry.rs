@@ -248,12 +248,14 @@ impl Redactor {
     }
 
     /// Hides the hosts of [`run_names`], with the gateways of the trace list for `xmtr traces`,
-    /// which deletes a listed trace on the gateway it was uploaded to. A list that cannot be read
-    /// adds no gateways; the command itself reports it.
+    /// which deletes a listed trace on the gateway it was uploaded to. A list that cannot be read,
+    /// or a user without one, adds no gateways; the command itself reports it.
     fn for_run(cli: &Cli) -> Self {
         let listed: Vec<String> = match &cli.command {
             Some(Command::Traces(_)) => traces::store::path()
-                .and_then(|path| traces::store::read(&path))
+                .ok()
+                .flatten()
+                .and_then(|path| traces::store::read(&path).ok())
                 .map(|list| list.records.into_iter().map(|record| record.api).collect())
                 .unwrap_or_default(),
             _ => Vec::new(),
