@@ -198,20 +198,22 @@ fn redact_addresses(text: &str) -> String {
 /// environment.
 fn run_names(cli: &Cli, listed: &[String]) -> Vec<String> {
     let mut names = cli.targets.clone();
-    if let DnsSpec::Server {
-        host: Host::Name(name),
-        ..
-    } = &cli.dns
-    {
-        names.push(name.clone());
-    }
-    let delete_api = match &cli.command {
+    let delete = match &cli.command {
         Some(Command::Traces(traces)) => match &traces.command {
-            Some(TracesCommand::Delete(delete)) => delete.api.as_deref(),
+            Some(TracesCommand::Delete(delete)) => Some(delete),
             _ => None,
         },
         _ => None,
     };
+    let dns = delete.map_or(&cli.dns, |delete| &delete.dns);
+    if let DnsSpec::Server {
+        host: Host::Name(name),
+        ..
+    } = dns
+    {
+        names.push(name.clone());
+    }
+    let delete_api = delete.and_then(|delete| delete.api.as_deref());
     let apis = [Some(cli.api.as_str()), delete_api]
         .into_iter()
         .flatten()
@@ -610,12 +612,14 @@ mod tests {
             "delete",
             "--api",
             "https://gateway.corp.example",
+            "--dns",
+            "https://doh.corp.example/dns-query",
             "103115083070058496-nBjPEnny",
         ]);
         assert_eq!(
             Redactor::for_run(&custom)
-                .text("deleting https://gateway.corp.example/api/v1/traces/1"),
-            "deleting https://[host]/api/v1/traces/1"
+                .text("deleting https://gateway.corp.example/api/v1/traces/1 via doh.corp.example"),
+            "deleting https://[host]/api/v1/traces/1 via [host]"
         );
         let listed = ["https://gw.corp.example".to_owned(), DEFAULT_API.to_owned()];
         let redactor = Redactor::new(run_names(&delete, &listed), None);

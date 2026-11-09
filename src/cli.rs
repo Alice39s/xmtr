@@ -181,6 +181,10 @@ pub struct DeleteArgs {
     /// `XMTR_API` and the default gateway.
     #[arg(long, value_name = "URL")]
     pub api: Option<String>,
+
+    /// Resolver for the gateway, with the values `xmtr --dns` takes.
+    #[arg(long, default_value = "auto", value_name = "RESOLVER")]
+    pub dns: DnsSpec,
 }
 
 #[derive(Debug, Subcommand)]
@@ -318,6 +322,8 @@ mod tests {
                 "1b4e28ba-2fa1-4d2b-883f-0016d3cca427",
                 "--api",
                 "http://127.0.0.1:8787",
+                "--dns",
+                "quad9",
             ])
             .unwrap(),
         );
@@ -331,6 +337,8 @@ mod tests {
             Some("1b4e28ba-2fa1-4d2b-883f-0016d3cca427")
         );
         assert_eq!(args.api.as_deref(), Some("http://127.0.0.1:8787"));
+        assert_eq!(args.dns, "quad9".parse().unwrap());
+        assert!(parse(&["--dns", "quad9"]).is_err());
         assert!(parse(&["--json", "delete", "1"]).is_err());
         assert!(parse(&["delete"]).is_err());
     }

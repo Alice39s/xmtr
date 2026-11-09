@@ -302,7 +302,7 @@ xmtr traces --json               # 輸出完整記錄
 xmtr traces delete <TRACE>       # 從網關和列表中刪除這條記錄
 ```
 
-`<TRACE>` 可以是 trace ID、IPMap 鏈接或管理鏈接。admin key 依次取自 `--admin-key`、管理鏈接和列表；網關依次取自 `--api`、列表、`XMTR_API` 和默認網關。網關上已經沒有的記錄（網關以 HTTP 404 和 `application/problem+json` 響應體回應）也會從列表中移除；其他 404 響應不會移除列表裏的記錄。
+`<TRACE>` 可以是 trace ID、IPMap 鏈接或管理鏈接。admin key 依次取自 `--admin-key`、管理鏈接和列表；網關依次取自 `--api`、列表、`XMTR_API` 和默認網關。`--dns` 指定解析網關用的解析器，取值與追蹤時相同。網關上已經沒有的記錄（網關以 HTTP 404 和 `application/problem+json` 響應體回應）也會從列表中移除；其他 404 響應不會移除列表裏的記錄。
 
 ### DNS
 
@@ -324,7 +324,7 @@ xmtr traces delete <TRACE>       # 從網關和列表中刪除這條記錄
 ```text
 用法: xmtr [OPTIONS] <TARGET>...
       xmtr traces [--json]
-      xmtr traces delete <TRACE> [--admin-key <KEY>] [--api <URL>]
+      xmtr traces delete <TRACE> [--admin-key <KEY>] [--api <URL>] [--dns <RESOLVER>]
       xmtr self update [--force] [--tag <TAG>]
       xmtr self uninstall
 
