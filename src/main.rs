@@ -14,8 +14,7 @@ mod update;
 mod upload;
 
 use std::collections::HashMap;
-use std::fmt::Display;
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::net::IpAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -28,6 +27,7 @@ use crate::board::Board;
 use crate::cli::{Cli, Command, SelfCommand};
 use crate::dns::Dns;
 use crate::live::{Console, Live, Note};
+use crate::output::Stdout;
 use crate::runner::Settings;
 use crate::telemetry::Telemetry;
 
@@ -36,33 +36,6 @@ const DEFAULT_PARALLEL: usize = 8;
 /// True when no hop of the route answered a single probe.
 fn silent(route: &model::Route) -> bool {
     route.hops.iter().all(|hop| hop.recv == 0)
-}
-
-/// Lines for stdout. A reader that went away, such as `xmtr ... | head -1`, closes stdout; later lines
-/// are then dropped instead of aborting the run.
-struct Stdout {
-    open: bool,
-}
-
-impl Stdout {
-    const fn new() -> Self {
-        Self { open: true }
-    }
-
-    fn line(&mut self, text: impl Display) {
-        if self.open && writeln!(std::io::stdout().lock(), "{text}").is_err() {
-            self.open = false;
-        }
-    }
-
-    /// Prints a link to the stored trace on stdout, or on stderr when stdout is closed so the trace
-    /// can still be found.
-    fn link(&mut self, text: &str) {
-        self.line(text);
-        if !self.open {
-            eprintln!("{text}");
-        }
-    }
 }
 
 /// Everything a run produced, printed once the live view is gone.
