@@ -34,9 +34,21 @@ pub struct List {
     pub unreadable: Vec<usize>,
 }
 
-/// The record on `line`, if it holds one.
-fn parse(line: &str) -> Option<Record> {
-    serde_json::from_str(line).ok()
+/// The lines of the list `bytes` that are not blank, with their line numbers. The list is split
+/// as bytes, so a line cut inside a multibyte character leaves the other lines readable.
+fn lines(bytes: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .enumerate()
+        .filter(|(_, line)| !line.trim_ascii().is_empty())
+        .map(|(index, line)| (index + 1, line))
+}
+
+/// The record on `line`, if it holds one; a line that is not UTF-8 holds none.
+fn parse(line: &[u8]) -> Option<Record> {
+    std::str::from_utf8(line)
+        .ok()
+        .and_then(|line| serde_json::from_str(line).ok())
 }
 
 /// `xmtr/traces.jsonl` in the data directory of the user xmtr runs as.
@@ -190,35 +202,32 @@ fn ends_inside_a_line(file: &mut File) -> io::Result<bool> {
 
 /// The list at `path`; empty when the file does not exist yet.
 pub fn read(path: &Path) -> Result<List> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(List::default()),
         Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
     };
     let mut list = List::default();
-    for (index, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
+    for (number, line) in lines(&bytes) {
         match parse(line) {
             Some(record) => list.records.push(record),
-            None => list.unreadable.push(index + 1),
+            None => list.unreadable.push(number),
         }
     }
     Ok(list)
 }
 
 /// Removes trace `id` from the list at `path`; false when the list does not hold it. Every other
-/// line stays as it is, including lines that hold no record. The list is written to a new file that
-/// then replaces the old one, so an interrupted write loses nothing.
+/// line keeps its bytes, including lines that hold no record. The list is written to a new file
+/// that then replaces the old one, so an interrupted write loses nothing.
 pub fn remove(path: &Path, id: &str) -> Result<bool> {
     if !fs::exists(path).with_context(|| format!("reading {}", path.display()))? {
         return Ok(false);
     }
     let _lock = lock(path)?;
-    let old = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let lines: Vec<&str> = old.lines().filter(|line| !line.trim().is_empty()).collect();
-    let kept: Vec<&str> = lines
+    let old = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let lines: Vec<&[u8]> = lines(&old).map(|(_, line)| line).collect();
+    let kept: Vec<&[u8]> = lines
         .iter()
         .copied()
         .filter(|line| parse(line).is_none_or(|record| record.trace.id != id))
@@ -226,11 +235,15 @@ pub fn remove(path: &Path, id: &str) -> Result<bool> {
     if kept.len() == lines.len() {
         return Ok(false);
     }
-    let text: String = kept.into_iter().map(|line| format!("{line}\n")).collect();
+    let text: Vec<u8> = kept
+        .into_iter()
+        .flat_map(|line| line.iter().chain(b"\n"))
+        .copied()
+        .collect();
     let dir = directory(path);
     let mut file = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("creating a new list in {}", dir.display()))?;
-    file.write_all(text.as_bytes())
+    file.write_all(&text)
         .with_context(|| format!("writing {}", file.path().display()))?;
     file.persist(path)
         .with_context(|| format!("replacing {}", path.display()))?;
@@ -413,6 +426,46 @@ pub mod tests {
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             format!("{{not json\n{}", line(&record("3-c")))
+        );
+    }
+
+    #[test]
+    fn a_line_cut_inside_a_character_leaves_the_others_readable() {
+        let dir = scratch();
+        let path = dir.path().join("traces.jsonl");
+        let mut idn = record("2-b");
+        idn.targets = vec!["例子.example".to_owned()];
+        let full = line(&idn);
+        // Cut after the first byte of the three-byte character 例.
+        let cut = &full.as_bytes()[..full.find('例').unwrap() + 1];
+        assert!(std::str::from_utf8(cut).is_err());
+        let mut bytes = line(&record("1-a")).into_bytes();
+        bytes.extend_from_slice(cut);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(line(&record(ID)).as_bytes());
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            read(&path).unwrap(),
+            List {
+                records: vec![record("1-a"), record(ID)],
+                unreadable: vec![2],
+            }
+        );
+        assert!(remove(&path, "1-a").unwrap());
+        let mut kept = cut.to_vec();
+        kept.push(b'\n');
+        kept.extend_from_slice(line(&record(ID)).as_bytes());
+        assert_eq!(fs::read(&path).unwrap(), kept);
+
+        // A record added after a cut last line gets a line of its own.
+        fs::write(&path, cut).unwrap();
+        append(&path, &record(ID)).unwrap();
+        assert_eq!(
+            read(&path).unwrap(),
+            List {
+                records: vec![record(ID)],
+                unreadable: vec![1],
+            }
         );
     }
 
