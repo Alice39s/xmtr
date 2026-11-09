@@ -2,7 +2,8 @@
 //! under the data directory of the user xmtr runs as, oldest first. On Unix only its owner can
 //! read the file.
 
-use std::fs::{self, OpenOptions};
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -116,10 +117,26 @@ fn directory(path: &Path) -> &Path {
 /// Options that create a missing file, readable and writable by its owner only on Unix.
 fn private_file() -> OpenOptions {
     let mut options = OpenOptions::new();
-    options.create(true);
+    options.create(true).truncate(false);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options
+}
+
+/// Takes the exclusive lock on the list at `path`, held until the returned file is dropped.
+/// Adding and removing records hold it, so a removal cannot write the list over a record another
+/// xmtr adds meanwhile. The lock is on `traces.jsonl.lock` beside the list, which removals replace.
+fn lock(path: &Path) -> Result<File> {
+    let mut name = OsString::from(path.as_os_str());
+    name.push(".lock");
+    let lock_path = PathBuf::from(name);
+    let file = private_file()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    fs4::FileExt::lock(&file).with_context(|| format!("locking {}", lock_path.display()))?;
+    Ok(file)
 }
 
 fn line(record: &Record) -> String {
@@ -132,6 +149,7 @@ fn line(record: &Record) -> String {
 pub fn append(path: &Path, record: &Record) -> Result<()> {
     let dir = directory(path);
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let _lock = lock(path)?;
     private_file()
         .append(true)
         .open(path)
@@ -159,6 +177,10 @@ pub fn read(path: &Path) -> Result<Vec<Record>> {
 /// Removes trace `id` from the list at `path`; false when the list does not hold it. The list is
 /// written to a new file that then replaces the old one, so an interrupted write loses nothing.
 pub fn remove(path: &Path, id: &str) -> Result<bool> {
+    if !fs::exists(path).with_context(|| format!("reading {}", path.display()))? {
+        return Ok(false);
+    }
+    let _lock = lock(path)?;
     let records = read(path)?;
     let kept: Vec<&Record> = records
         .iter()
@@ -293,6 +315,34 @@ pub mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn records_added_during_removals_survive() {
+        let dir = scratch();
+        let path = dir.path().join("xmtr").join("traces.jsonl");
+        let kept: Vec<String> = (0..200).map(|n| format!("{n}-kept")).collect();
+        let adder = {
+            let path = path.clone();
+            let kept = kept.clone();
+            std::thread::spawn(move || {
+                for id in &kept {
+                    append(&path, &record(id)).unwrap();
+                }
+            })
+        };
+        for n in 0..200 {
+            let id = format!("{n}-gone");
+            append(&path, &record(&id)).unwrap();
+            assert!(remove(&path, &id).unwrap());
+        }
+        adder.join().unwrap();
+        let ids: Vec<String> = read(&path)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.trace.id)
+            .collect();
+        assert_eq!(ids, kept);
     }
 
     #[test]
