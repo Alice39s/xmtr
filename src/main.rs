@@ -45,6 +45,8 @@ struct Report {
     unanswered: usize,
     body: model::Upload,
     upload: Option<Result<model::UploadAccepted>>,
+    /// Why the accepted upload is missing from the trace list.
+    unlisted: Option<anyhow::Error>,
 }
 
 fn settings(cli: &Cli, privilege: trippy_core::PrivilegeMode) -> Settings {
@@ -138,12 +140,20 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
         }
         result
     });
+    let unlisted = match &upload {
+        Some(Ok(accepted)) => traces::save(accepted, &cli.api, &cli.targets).err(),
+        _ => None,
+    };
+    if let Some(error) = &unlisted {
+        telemetry::capture(error);
+    }
     Ok(Report {
         skipped: plan.skipped,
         failures,
         unanswered,
         body,
         upload,
+        unlisted,
     })
 }
 
@@ -156,7 +166,8 @@ fn table_width(terminal: bool) -> usize {
     ratatui::crossterm::terminal::size().map_or(usize::MAX, |(width, _)| usize::from(width))
 }
 
-/// What the run left out or could not do; `--quiet` keeps only the routes that failed.
+/// What the run left out or could not do; `--quiet` keeps the routes that failed and an upload
+/// missing from the trace list.
 fn notes(cli: &Cli, report: &Report) -> Vec<Note> {
     let mut notes = Vec::new();
     if !cli.quiet {
@@ -165,6 +176,9 @@ fn notes(cli: &Cli, report: &Report) -> Vec<Note> {
     notes.extend(report.failures.iter().cloned().map(Note::Failed));
     if report.unanswered > 0 && !cli.quiet {
         notes.push(Note::Unanswered(report.unanswered));
+    }
+    if let Some(error) = &report.unlisted {
+        notes.push(Note::Unlisted(format!("{error:#}")));
     }
     notes
 }
@@ -196,6 +210,7 @@ fn report(cli: &Cli, console: Console, report: Report) -> Result<ExitCode> {
     if cli.json {
         stdout.line(serde_json::to_string_pretty(&report.body)?);
     }
+    let listed = report.unlisted.is_none();
     match report.upload {
         None => Ok(ExitCode::SUCCESS),
         Some(Ok(accepted)) => {
@@ -207,7 +222,7 @@ fn report(cli: &Cli, console: Console, report: Report) -> Result<ExitCode> {
                 if accepted.pin {
                     stdout.line("Readers also need the PIN you set.");
                 }
-                for line in traces::admin_text(&accepted) {
+                for line in traces::admin_text(&accepted, listed) {
                     stdout.link(&line);
                 }
             }
@@ -243,7 +258,13 @@ fn show_result(cli: &Cli, console: Console, live: Live, report: Report) -> Resul
     let notes = notes(cli, &report);
     let (upload, code) = match report.upload {
         None => (live::Upload::Skipped, ExitCode::SUCCESS),
-        Some(Ok(accepted)) => (live::Upload::Accepted(accepted), ExitCode::SUCCESS),
+        Some(Ok(trace)) => (
+            live::Upload::Accepted {
+                trace,
+                listed: report.unlisted.is_none(),
+            },
+            ExitCode::SUCCESS,
+        ),
         Some(Err(error)) => (
             live::Upload::Failed(format!("{error:#}")),
             ExitCode::from(2),
@@ -350,6 +371,7 @@ fn main() -> ExitCode {
         Some(Command::Manage(SelfCommand::Uninstall)) => {
             manage::uninstall().map(|()| ExitCode::SUCCESS)
         }
+        Some(Command::Traces(args)) => traces::run(args, &cli.api).map(|()| ExitCode::SUCCESS),
         None => run(&cli, console, &telemetry),
     };
     let code = match result {

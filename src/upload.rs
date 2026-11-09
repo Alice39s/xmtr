@@ -1,14 +1,16 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use ureq::Agent;
-use ureq::config::Config;
-use ureq::http::Uri;
+use anyhow::{Context, Result, anyhow, bail};
+use ureq::config::{Config, ConfigBuilder};
+use ureq::http::{Response, StatusCode, Uri};
+use ureq::typestate::AgentScope;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{
     ConnectProxyConnector, Connector, NextTimeout, RustlsConnector, TcpConnector,
 };
+use ureq::{Agent, Body};
+use url::Url;
 
 use crate::dns::Dns;
 use crate::model::{Problem, Upload, UploadAccepted};
@@ -19,7 +21,8 @@ mod socks;
 #[path = "upload/source.rs"]
 pub mod source;
 
-const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Time limit for a request to the gateway.
+pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 #[cfg(test)]
@@ -57,14 +60,17 @@ impl Resolver for PinnedResolver {
     }
 }
 
-fn config(timeout: Duration) -> Config {
+fn config_builder(timeout: Duration) -> ConfigBuilder<AgentScope> {
     Agent::config_builder()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
         // Addresses are pinned to the gateway host, so a redirect elsewhere would reach the wrong server.
         .max_redirects(0)
         .user_agent(USER_AGENT)
-        .build()
+}
+
+fn config(timeout: Duration) -> Config {
+    config_builder(timeout).build()
 }
 
 /// Connections through the SOCKS or HTTP proxy from the environment, if any, then TLS.
@@ -78,6 +84,17 @@ fn connector() -> impl Connector {
 /// An agent that resolves with the system and connects like the upload does.
 pub fn proxied_agent(timeout: Duration) -> Agent {
     Agent::with_parts(config(timeout), connector(), DefaultResolver::default())
+}
+
+/// An agent like [`proxied_agent`] that ignores the proxy settings, for test servers on this
+/// machine.
+#[cfg(test)]
+pub fn direct_agent() -> Agent {
+    Agent::with_parts(
+        config_builder(UPLOAD_TIMEOUT).proxy(None).build(),
+        connector(),
+        DefaultResolver::default(),
+    )
 }
 
 /// The host of the proxy the environment configures.
@@ -182,17 +199,50 @@ fn upload_with_timeout(
             .context("reading upload response")?;
         return Ok(printable_accepted(accepted));
     }
+    bail!(
+        "upload rejected with HTTP {}: {}",
+        status.as_u16(),
+        reason(&mut response)
+    )
+}
+
+/// Why the gateway turned a request down: the detail or title of its problem body, or the status.
+fn reason(response: &mut Response<Body>) -> String {
     let problem = response.body_mut().read_json::<Problem>().ok();
-    let reason = problem
+    problem
         .and_then(|problem| problem.detail.or(problem.title))
         .map(|reason| printable(&reason))
         .unwrap_or_else(|| {
-            status
+            response
+                .status()
                 .canonical_reason()
                 .unwrap_or("unknown error")
                 .to_owned()
-        });
-    bail!("upload rejected with HTTP {}: {reason}", status.as_u16())
+        })
+}
+
+/// Deletes trace `id` from the gateway at `api` with its admin key. Returns false when the gateway
+/// has no such trace.
+pub fn delete(agent: &Agent, api: &str, id: &str, admin_key: &str) -> Result<bool> {
+    let mut url = Url::parse(api).with_context(|| format!("reading the gateway address {api}"))?;
+    url.path_segments_mut()
+        .map_err(|()| anyhow!("the gateway address {api} cannot hold a path"))?
+        .pop_if_empty()
+        .extend(["api", "v1", "traces", id]);
+    let mut response = agent
+        .delete(url.as_str())
+        .header("X-Trace-Admin-Key", admin_key)
+        .call()
+        .with_context(|| format!("deleting {url}"))?;
+    match response.status() {
+        status if status.is_success() => Ok(true),
+        StatusCode::NOT_FOUND => Ok(false),
+        status => bail!(
+            "deletion rejected with HTTP {}: {}",
+            status.as_u16(),
+            reason(&mut response)
+        ),
+    }
 }
 
 #[cfg(test)]

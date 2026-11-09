@@ -36,6 +36,8 @@ pub enum Note {
     Failed(String),
     /// Addresses without a reverse DNS or AS answer in time.
     Unanswered(usize),
+    /// Why the uploaded trace could not be added to the trace list.
+    Unlisted(String),
 }
 
 impl Note {
@@ -43,11 +45,16 @@ impl Note {
         format!("no reverse DNS or AS answer in time for {count} addresses")
     }
 
+    fn unlisted(text: &str) -> String {
+        format!("not added to the trace list: {text}")
+    }
+
     fn plain(&self) -> String {
         match self {
             Self::Skipped(text) => format!("skip {text}"),
             Self::Failed(text) => format!("error {text}"),
             Self::Unanswered(count) => format!("note: {}", Self::unanswered(*count)),
+            Self::Unlisted(text) => format!("note: {}", Self::unlisted(text)),
         }
     }
 
@@ -64,6 +71,11 @@ impl Note {
                 muted("·"),
                 Self::unanswered(*count),
                 Style::new().fg(palette().muted),
+            ),
+            Self::Unlisted(text) => (
+                paint("!", palette().warn),
+                Self::unlisted(text),
+                Style::new(),
             ),
         };
         wrapped(&text, inner.saturating_sub(INDENT.len() + 2))
@@ -526,6 +538,7 @@ mod tests {
             Note::Skipped("example.invalid: no address".to_owned()),
             Note::Failed("1.1.1.1 v4 ICMP: no probe was answered".to_owned()),
             Note::Unanswered(3),
+            Note::Unlisted("writing traces.jsonl: permission denied".to_owned()),
         ];
         assert_eq!(
             problem_text(&privileges(), &notes),
@@ -533,6 +546,7 @@ mod tests {
                 "skip example.invalid: no address",
                 "error 1.1.1.1 v4 ICMP: no probe was answered",
                 "note: no reverse DNS or AS answer in time for 3 addresses",
+                "note: not added to the trace list: writing traces.jsonl: permission denied",
                 "error: checking raw socket privileges: operation not permitted",
             ]
         );

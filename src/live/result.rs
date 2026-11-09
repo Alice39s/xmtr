@@ -13,7 +13,11 @@ use crate::traces;
 
 #[derive(Debug)]
 pub enum Upload {
-    Accepted(UploadAccepted),
+    /// The stored trace; `listed` when the trace list holds it.
+    Accepted {
+        trace: UploadAccepted,
+        listed: bool,
+    },
     Skipped,
     Failed(String),
 }
@@ -366,7 +370,10 @@ fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Vec<Line<'s
     let counts = muted(format!(" · {routes} {noun} · {reached} reached"));
     let text_width = inner.saturating_sub(INDENT.len() + CALLOUT.chars().count());
     match &summary.upload {
-        Upload::Accepted(accepted) => {
+        Upload::Accepted {
+            trace: accepted,
+            listed,
+        } => {
             let accent = palette().accent;
             let mut below = Vec::new();
             let link = if callout_width(&accepted.url) <= inner {
@@ -413,7 +420,7 @@ fn headline(summary: &Summary, inner: usize) -> (Vec<Line<'static>>, Vec<Line<'s
                     below.extend(admin.into_iter().map(Line::from));
                 }
                 lines.extend(
-                    wrapped(traces::ADMIN_WARNING, text_width)
+                    wrapped(traces::admin_warning(*listed), text_width)
                         .into_iter()
                         .map(|part| callout(accent, vec![paint(part, palette().warn)])),
                 );
@@ -454,7 +461,9 @@ pub fn render(
     let steps = steps::steps(state, options, failed);
     // The panel widens up to the terminal to hold the links, with one spare cell like the tables.
     let links = match &summary.upload {
-        Upload::Accepted(accepted) => traces::admin_lines(accepted)
+        Upload::Accepted {
+            trace: accepted, ..
+        } => traces::admin_lines(accepted)
             .into_iter()
             .map(|(label, value)| callout_width(&(label + &value)))
             .chain([callout_width(&accepted.url)])
@@ -492,18 +501,18 @@ pub fn render(
     }
     // Long reports scroll the headline away, so the link also closes the panel when it fits.
     let bottom_right = match &summary.upload {
-        Upload::Accepted(accepted) if accepted.url.chars().count() + 6 <= inner => {
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled(
-                    accepted.url.clone(),
-                    Style::new()
-                        .fg(palette().accent)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-                Span::raw(" "),
-            ])
-        }
+        Upload::Accepted {
+            trace: accepted, ..
+        } if accepted.url.chars().count() + 6 <= inner => Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                accepted.url.clone(),
+                Style::new()
+                    .fg(palette().accent)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            Span::raw(" "),
+        ]),
         _ => border_text(&format!("v{}", env!("CARGO_PKG_VERSION"))),
     };
     Rendered {
@@ -608,14 +617,17 @@ mod tests {
     }
 
     fn accepted() -> Upload {
-        Upload::Accepted(UploadAccepted {
-            id: "103115083070058496-nBjPEnny".to_owned(),
-            pin: true,
-            url: URL.to_owned(),
-            admin_key: None,
-            admin_url: None,
-            admin_api_url: None,
-        })
+        Upload::Accepted {
+            trace: UploadAccepted {
+                id: "103115083070058496-nBjPEnny".to_owned(),
+                pin: true,
+                url: URL.to_owned(),
+                admin_key: None,
+                admin_url: None,
+                admin_api_url: None,
+            },
+            listed: true,
+        }
     }
 
     #[test]
@@ -660,18 +672,21 @@ mod tests {
             .collect()
     }
 
-    fn with_admin_links() -> Upload {
-        Upload::Accepted(UploadAccepted {
-            pin: true,
-            ..traces::tests::accepted()
-        })
+    fn with_admin_links(listed: bool) -> Upload {
+        Upload::Accepted {
+            trace: UploadAccepted {
+                pin: true,
+                ..traces::tests::accepted()
+            },
+            listed,
+        }
     }
 
     #[test]
     fn lists_the_admin_link_and_delete_command_under_the_trace_id() {
-        let (screen, rendered) = draw(&summary(with_admin_links()), 200);
+        let (screen, rendered) = draw(&summary(with_admin_links(true)), 200);
         let lines: Vec<&str> = screen.lines().collect();
-        let admin = traces::admin_text(&traces::tests::accepted());
+        let admin = traces::admin_text(&traces::tests::accepted(), true);
         assert!(
             lines[5].contains("trace-id 103115083070058496-nBjPEnny"),
             "{screen}"
@@ -684,7 +699,8 @@ mod tests {
             lines[7].contains(&format!("\u{258d} {}", admin[1])),
             "{screen}"
         );
-        assert!(lines[8].contains(traces::ADMIN_WARNING), "{screen}");
+        assert!(lines[8].contains(&admin[2]), "{screen}");
+        assert!(admin[2].contains("Run xmtr traces"));
         // The panel widens to the delete command, the widest line, and one spare cell.
         assert_eq!(usize::from(rendered.width), admin[1].chars().count() + 6);
         assert!(rendered.below.is_empty());
@@ -692,18 +708,19 @@ mod tests {
 
     #[test]
     fn prints_admin_lines_too_wide_for_the_panel_below_it() {
-        let (screen, rendered) = draw(&summary(with_admin_links()), 120);
-        let admin = traces::admin_text(&traces::tests::accepted());
+        let (screen, rendered) = draw(&summary(with_admin_links(false)), 120);
+        let admin = traces::admin_text(&traces::tests::accepted(), false);
         assert!(screen.contains(URL), "{screen}");
         assert!(
             screen.contains("The admin link and delete command are printed below"),
             "{screen}"
         );
-        assert!(screen.contains(traces::ADMIN_WARNING), "{screen}");
+        assert!(screen.contains(&admin[2]), "{screen}");
+        assert!(!screen.contains("xmtr traces"), "{screen}");
         assert!(!screen.contains("admin-key"), "{screen}");
         assert_eq!(text(&rendered.below), admin[..2]);
 
-        let (narrow, rendered) = draw(&summary(with_admin_links()), 53);
+        let (narrow, rendered) = draw(&summary(with_admin_links(true)), 53);
         assert!(narrow.contains("The link is printed below"), "{narrow}");
         assert!(narrow.contains("Anyone with the admin link"), "{narrow}");
         assert_eq!(
