@@ -25,11 +25,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use ratatui::backend::{CrosstermBackend, IntoCrossterm};
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::crossterm::{cursor, execute, terminal};
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
@@ -77,7 +78,7 @@ pub struct Options {
 
 pub struct Live {
     done: Sender<Option<Summary>>,
-    handle: JoinHandle<Result<Option<String>>>,
+    handle: JoinHandle<Result<Vec<Line<'static>>>>,
     panel: bool,
 }
 
@@ -207,8 +208,8 @@ impl Live {
     }
 
     /// Ends the live view: with a summary the result panel takes its place, without one it is
-    /// erased. Returns a link the result panel had no room for.
-    pub fn finish(self, summary: Option<Summary>) -> Result<Option<String>> {
+    /// erased. Returns the links the result panel had no room for.
+    pub fn finish(self, summary: Option<Summary>) -> Result<Vec<Line<'static>>> {
         self.done
             .send(summary)
             .context("the live view stopped early")?;
@@ -216,11 +217,6 @@ impl Live {
             .join()
             .map_err(|_| anyhow::anyhow!("the live view panicked"))?
     }
-}
-
-/// The accent color of the palette in use, for text printed beside the panel.
-pub fn accent() -> ratatui::crossterm::style::Color {
-    theme::palette().accent.into_crossterm()
 }
 
 type Term = Terminal<CrosstermBackend<Stderr>>;
@@ -263,15 +259,15 @@ impl Panel {
     }
 
     /// Prints the result panel above the viewport, which scrolls into the terminal's history.
-    /// Returns the link when it is too wide for the panel, for the caller to print as plain text
-    /// the terminal can wrap.
+    /// Returns the links too wide for the panel, for the caller to print as plain text the terminal
+    /// can wrap.
     fn print_result(
         &mut self,
         summary: &Summary,
         state: &State,
         options: &Options,
         elapsed: f64,
-    ) -> Result<Option<String>> {
+    ) -> Result<Vec<Line<'static>>> {
         let rendered = result::render(summary, state, options, elapsed, self.area.width);
         let block = theme::panel_block(rendered.top_right.clone(), rendered.bottom_right.clone());
         let width = rendered.width;
@@ -291,7 +287,7 @@ impl Panel {
             Ok(())
         })?;
         self.area = area;
-        Ok(rendered.link_below)
+        Ok(rendered.below)
     }
 
     /// Clears the viewport and leaves the cursor where it started, so later output takes its place.
@@ -370,13 +366,13 @@ fn draw_until(
     board: &Board,
     options: &Options,
     finished: &Receiver<Option<Summary>>,
-) -> Result<Option<String>> {
+) -> Result<Vec<Line<'static>>> {
     let started = Instant::now();
     let mut tick = 0usize;
     loop {
         if HALT.load(Ordering::SeqCst) {
             view.close()?;
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let mut state = board.snapshot();
         let elapsed = started.elapsed().as_secs_f64();
@@ -388,23 +384,23 @@ fn draw_until(
                 state = board.snapshot();
                 if let View::Panel(panel) = &mut view {
                     state.phase = Phase::Result;
-                    let link = match summary {
+                    let below = match summary {
                         Some(summary) => panel.print_result(&summary, &state, options, elapsed)?,
-                        None => None,
+                        None => Vec::new(),
                     };
                     panel.close()?;
-                    return Ok(link);
+                    return Ok(below);
                 }
                 // Once with the board as it ended, then once more to close the last step.
                 view.draw(&state, options, elapsed, tick)?;
                 state.phase = Phase::Result;
                 view.draw(&state, options, elapsed, tick)?;
                 view.close()?;
-                return Ok(None);
+                return Ok(Vec::new());
             }
             Err(TryRecvError::Disconnected) => {
                 view.close()?;
-                return Ok(None);
+                return Ok(Vec::new());
             }
             Err(TryRecvError::Empty) => {}
         }

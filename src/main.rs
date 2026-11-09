@@ -9,6 +9,7 @@ mod output;
 mod plan;
 mod runner;
 mod telemetry;
+mod traces;
 mod update;
 mod upload;
 
@@ -22,7 +23,6 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
-use ratatui::crossterm::style::Stylize;
 
 use crate::board::Board;
 use crate::cli::{Cli, Command, SelfCommand};
@@ -55,12 +55,12 @@ impl Stdout {
         }
     }
 
-    /// Prints the IPMap link on stdout, or on stderr when stdout is closed so the stored trace can still
-    /// be found.
-    fn link(&mut self, url: &str) {
-        self.line(url);
+    /// Prints a link to the stored trace on stdout, or on stderr when stdout is closed so the trace
+    /// can still be found.
+    fn link(&mut self, text: &str) {
+        self.line(text);
         if !self.open {
-            eprintln!("{url}");
+            eprintln!("{text}");
         }
     }
 }
@@ -230,8 +230,13 @@ fn report(cli: &Cli, console: Console, report: Report) -> Result<ExitCode> {
                 stdout.line(format_args!("trace-id {}", accepted.id));
             }
             stdout.link(&accepted.url);
-            if !cli.quiet && accepted.pin {
-                stdout.line("Readers also need the PIN you set.");
+            if !cli.quiet {
+                if accepted.pin {
+                    stdout.line("Readers also need the PIN you set.");
+                }
+                for line in traces::admin_text(&accepted) {
+                    stdout.link(&line);
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -261,7 +266,7 @@ fn live_options(cli: &Cli) -> Result<live::Options> {
 }
 
 /// Hands the report to the live view, which prints it as the result panel.
-fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
+fn show_result(cli: &Cli, console: Console, live: Live, report: Report) -> Result<ExitCode> {
     let notes = notes(cli, &report);
     let (upload, code) = match report.upload {
         None => (live::Upload::Skipped, ExitCode::SUCCESS),
@@ -271,15 +276,13 @@ fn show_result(cli: &Cli, live: Live, report: Report) -> Result<ExitCode> {
             ExitCode::from(2),
         ),
     };
-    let link_below = live.finish(Some(live::Summary {
+    let below = live.finish(Some(live::Summary {
         routes: report.body.routes.clone(),
         upload,
         notes,
     }))?;
-    if let Some(link) = link_below {
-        // Plain text the terminal can wrap, beside the panel on stderr.
-        eprintln!("{}", link.as_str().with(live::accent()).underlined());
-    }
+    // Plain text the terminal can wrap, beside the panel on stderr.
+    console.lines(&below);
     if cli.json {
         Stdout::new().line(serde_json::to_string_pretty(&report.body)?);
     }
@@ -300,7 +303,7 @@ fn finish(
     // there; with `--json` the document still follows on stdout.
     match result {
         Ok(report) if live.shows_result() && !report.body.routes.is_empty() => {
-            show_result(cli, live, report)
+            show_result(cli, console, live, report)
         }
         result => {
             live.finish(None)?;

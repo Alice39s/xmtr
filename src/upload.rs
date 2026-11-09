@@ -144,7 +144,21 @@ fn printable(text: &str) -> String {
         .collect()
 }
 
-/// Sends the routes to the gateway and returns the stored trace ID, view key and IPMap link.
+/// The gateway text of an accepted upload, with control characters replaced.
+fn printable_accepted(accepted: UploadAccepted) -> UploadAccepted {
+    let text = |value: Option<String>| value.as_deref().map(printable);
+    UploadAccepted {
+        id: printable(&accepted.id),
+        pin: accepted.pin,
+        url: printable(&accepted.url),
+        admin_key: text(accepted.admin_key),
+        admin_url: text(accepted.admin_url),
+        admin_api_url: text(accepted.admin_api_url),
+    }
+}
+
+/// Sends the routes to the gateway and returns the stored trace ID, view key, IPMap link and, from
+/// gateways that support deletion, the admin key with its links.
 pub fn upload(api: &str, body: &Upload, dns: &Dns) -> Result<UploadAccepted> {
     upload_with_timeout(api, body, dns, UPLOAD_TIMEOUT)
 }
@@ -166,11 +180,7 @@ fn upload_with_timeout(
             .body_mut()
             .read_json::<UploadAccepted>()
             .context("reading upload response")?;
-        return Ok(UploadAccepted {
-            id: printable(&accepted.id),
-            url: printable(&accepted.url),
-            ..accepted
-        });
+        return Ok(printable_accepted(accepted));
     }
     let problem = response.body_mut().read_json::<Problem>().ok();
     let reason = problem
@@ -218,6 +228,29 @@ mod tests {
         assert_eq!(
             printable("https://xmsl.dev/ipmap?trace-id=1"),
             "https://xmsl.dev/ipmap?trace-id=1"
+        );
+    }
+
+    #[test]
+    fn replaces_control_characters_in_every_accepted_field() {
+        let accepted = printable_accepted(UploadAccepted {
+            id: "1\u{1b}[2J".to_owned(),
+            pin: true,
+            url: "https://xmsl.dev/xmtr/1\u{7}".to_owned(),
+            admin_key: Some("key\n".to_owned()),
+            admin_url: Some("https://xmsl.dev/ipmap?admin-key=\u{1b}]0;x".to_owned()),
+            admin_api_url: None,
+        });
+        assert_eq!(
+            accepted,
+            UploadAccepted {
+                id: "1\u{fffd}[2J".to_owned(),
+                pin: true,
+                url: "https://xmsl.dev/xmtr/1\u{fffd}".to_owned(),
+                admin_key: Some("key\u{fffd}".to_owned()),
+                admin_url: Some("https://xmsl.dev/ipmap?admin-key=\u{fffd}]0;x".to_owned()),
+                admin_api_url: None,
+            }
         );
     }
 }

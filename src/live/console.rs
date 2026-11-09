@@ -226,7 +226,8 @@ impl Console {
         Ok(())
     }
 
-    fn lines(self, lines: &[Line<'static>]) {
+    /// Prints `lines` on stderr, in their styles on a terminal.
+    pub fn lines(self, lines: &[Line<'static>]) {
         emit(|out| {
             for line in lines {
                 self.write(out, &line.spans)?;

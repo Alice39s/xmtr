@@ -153,13 +153,33 @@ impl MplsLabel {
     }
 }
 
-/// Successful response of `POST /api/v1/traces`.
-#[derive(Debug, Deserialize)]
+/// Successful response of `POST /api/v1/traces`. Gateways without trace deletion return none of
+/// the three admin fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UploadAccepted {
     /// Snowflake ID and view key, such as `103115083070058496-nBjPEnny`.
     pub id: String,
     pub pin: bool,
     pub url: String,
+    /// UUID that authorizes deleting the trace.
+    #[serde(default)]
+    pub admin_key: Option<String>,
+    /// IPMap link that opens the trace with the admin key.
+    #[serde(default)]
+    pub admin_url: Option<String>,
+    /// Gateway URL with the admin key that deletes the trace on a `DELETE` request.
+    #[serde(default)]
+    pub admin_api_url: Option<String>,
+}
+
+impl UploadAccepted {
+    /// The command that deletes the trace, such as `curl -X DELETE 'https://…'`.
+    pub fn delete_command(&self) -> Option<String> {
+        self.admin_api_url
+            .as_ref()
+            .map(|url| format!("curl -X DELETE '{}'", url.replace('\'', r"'\''")))
+    }
 }
 
 /// RFC 9457 problem body returned by the gateway on errors.
@@ -254,6 +274,62 @@ mod tests {
             })
         );
         assert_eq!(host.mpls[0].text(), "[MPLS: Lbl 24001 TC 0 S 1 TTL 1]");
+    }
+
+    #[test]
+    fn reads_the_admin_fields_when_the_gateway_returns_them() {
+        let old: UploadAccepted = serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "id": "103115083070058496-nBjPEnny",
+            "pin": false,
+            "url": "https://xmsl.dev/xmtr/103115083070058496-nBjPEnny",
+        }))
+        .unwrap();
+        assert_eq!(
+            (&old.admin_key, &old.admin_url, &old.admin_api_url),
+            (&None, &None, &None)
+        );
+        assert_eq!(old.delete_command(), None);
+
+        let accepted: UploadAccepted = serde_json::from_value(serde_json::json!({
+            "id": "103115083070058496-nBjPEnny",
+            "pin": true,
+            "url": "https://xmsl.dev/xmtr/103115083070058496-nBjPEnny",
+            "adminKey": "1b4e28ba-2fa1-4d2b-883f-0016d3cca427",
+            "adminUrl": "https://xmsl.dev/ipmap?plat=xmtr&trace-id=103115083070058496-nBjPEnny&admin-key=1b4e28ba-2fa1-4d2b-883f-0016d3cca427",
+            "adminApiUrl": "https://stage-info-api.xmsl.dev/api/v1/traces/103115083070058496-nBjPEnny?admin-key=1b4e28ba-2fa1-4d2b-883f-0016d3cca427",
+        }))
+        .unwrap();
+        assert_eq!(
+            accepted.admin_key.as_deref(),
+            Some("1b4e28ba-2fa1-4d2b-883f-0016d3cca427")
+        );
+        assert_eq!(
+            accepted.delete_command().as_deref(),
+            Some(
+                "curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/103115083070058496-nBjPEnny?admin-key=1b4e28ba-2fa1-4d2b-883f-0016d3cca427'"
+            )
+        );
+        assert_eq!(
+            serde_json::to_value(&accepted).unwrap()["adminApiUrl"],
+            accepted.admin_api_url.unwrap()
+        );
+    }
+
+    #[test]
+    fn quotes_the_delete_command_for_the_shell() {
+        let accepted = UploadAccepted {
+            id: "1".to_owned(),
+            pin: false,
+            url: String::new(),
+            admin_key: None,
+            admin_url: None,
+            admin_api_url: Some("https://gateway.example/it's?a=1&b=2".to_owned()),
+        };
+        assert_eq!(
+            accepted.delete_command().as_deref(),
+            Some(r"curl -X DELETE 'https://gateway.example/it'\''s?a=1&b=2'")
+        );
     }
 
     #[test]
