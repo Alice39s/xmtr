@@ -3,7 +3,7 @@ from pathlib import Path
 
 from xmtr_ci import archive
 from xmtr_ci.project import IMAGE, ROOT, prerelease
-from xmtr_ci.shell import run
+from xmtr_ci.shell import attempt, run
 from xmtr_ci.targets import targets
 
 
@@ -26,4 +26,10 @@ def test(directory: Path, platforms: list[str]) -> None:
     build = ("docker", "buildx", "build", "--file", dockerfile)
     run(*build, "--platform", "linux/amd64", "--load", "--tag", "xmtr:test", directory)
     run("docker", "run", "--rm", "xmtr:test", "--version")
+    # The image's /etc/passwd gives root a home directory for the trace list.
+    listing = attempt("docker", "run", "--rm", "--env", "DO_NOT_TRACK=1", "xmtr:test", "traces")
+    expected = "No uploads in /root/.local/share/xmtr/traces.jsonl"
+    if listing.returncode != 0 or expected not in listing.stderr:
+        message = f"xmtr traces in the image did not print {expected!r}:\n{listing.stderr}"
+        raise SystemExit(message)
     run(*build, "--platform", ",".join(platforms), directory)
