@@ -1,3 +1,25 @@
+## 0.4.0 (2026-11-09)
+
+### Notes
+
+- This is an important release, and every user should upgrade to it
+
+### Features
+
+#### Delete uploaded traces with their admin key
+
+An upload could not be removed, and finding an older link meant searching the terminal history. When the gateway returns an admin key with the upload, xmtr prints an admin link and a `curl -X DELETE` command under the IPMap link, in the result panel or below it when they do not fit, and in the plain output. Every upload is added to a list in the user's data directory, readable only by its owner on Unix. `xmtr traces` lists the uploads newest first, `--json` prints the complete records, and `xmtr traces delete` deletes a trace given by its ID, IPMap link or admin link from the gateway and from the list. ([#41](https://github.com/Alice39s/xmtr/pull/41), fixes [#40](https://github.com/Alice39s/xmtr/issues/40))
+
+### Fixes
+
+#### Install OpenWrt packages with chained setup commands
+
+The OpenWrt guide uses `opkg-key add` to trust the opkg feed key and chains the download, repository setup and installation steps with `&&`. The APK v3 commands select the repository with `apk --print-arch` and refresh the index with `apk -U add xmtr`.
+
+#### Stop with an error when options come before a subcommand
+
+Options before `traces` or `self` made the subcommand and its arguments targets: `xmtr --dns quad9 traces delete <TRACE>` traced hosts named `traces` and `delete` and uploaded the routes. xmtr now exits with status 2 before it resolves or traces anything and asks for the options after the subcommand, such as `xmtr traces delete --dns quad9 <TRACE>`. ([#41](https://github.com/Alice39s/xmtr/pull/41))
+
 ## 0.3.6 (2026-11-04)
 
 ### Features

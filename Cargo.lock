@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr-installer"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "lexopt",
@@ -3582,7 +3582,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr-release"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "xmtr-trippy-core"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arrayvec",
