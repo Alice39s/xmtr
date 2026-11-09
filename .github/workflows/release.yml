@@ -359,7 +359,9 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [msrv, test, nix, build, smoke, smoke-freebsd, smoke-android, openwrt-feed, openwrt-community, openwrt-vm, packages, chocolatey, docker, alpine]
-    runs-on: ubuntu-latest
+    # Signing the OpenWrt packages checks each SDK image by its config ID, which Docker on
+    # Ubuntu 26.04 does not report, so this job runs on the same image as the OpenWrt jobs.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write
