@@ -63,7 +63,7 @@ fn policy(cli: &Cli, do_not_track: bool, interactive: bool) -> Option<Policy> {
     let usage = match &cli.command {
         Some(Command::Manage(_)) => true,
         Some(Command::Traces(traces)) => traces.deletes(),
-        None => !cli.no_upload,
+        None => cli.uploads(),
     };
     let policy = Policy {
         usage,
@@ -579,6 +579,9 @@ mod tests {
             })
         );
         assert_eq!(policy(&offline, false, false), None);
+        let dn42 = cli(&["--mode", "dn42", "172.20.0.1"]);
+        assert_eq!(policy(&dn42, false, false), None);
+        assert_eq!(policy(&dn42, false, true), policy(&offline, false, true));
         assert_eq!(
             policy(&update, false, false),
             Some(Policy {

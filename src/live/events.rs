@@ -122,7 +122,7 @@ pub fn describe(event: &Event, state: &State, options: &Options) -> (Phase, Tone
             let detail = match phase {
                 Phase::Resolve => plural(state.rows.len(), "target"),
                 Phase::Trace => plural(state.rows.len(), "route"),
-                Phase::Lookup => "reverse DNS and AS numbers".to_owned(),
+                Phase::Lookup => "host names and AS numbers".to_owned(),
                 Phase::Upload => options.upload.clone().unwrap_or_default(),
                 Phase::Result => String::new(),
             };

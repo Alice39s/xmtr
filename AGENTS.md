@@ -26,7 +26,7 @@ What went wrong or was missing before, and what happens now. ([#19](https://gith
 
 ## Pull requests
 
-Fill in `.github/pull_request_template.md`. Before asking for review, run with Rust 1.88.0 (the workspace MSRV):
+Fill in `.github/pull_request_template.md`. Before asking for review, run with Rust 1.89.0 (the workspace MSRV):
 
 ```sh
 cargo fmt --all --check

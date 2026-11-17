@@ -306,6 +306,32 @@ xmtr traces delete <TRACE>       # delete the trace from the gateway and from th
 
 `<TRACE>` is a trace ID, an IPMap link or an admin link. The admin key comes from `--admin-key`, the admin link or the list, in that order, and the gateway from `--api`, the list, `XMTR_API` or the default gateway. `--dns` selects the resolver for the gateway and takes the same values as for a trace. A trace the gateway no longer has, which it answers with HTTP 404 and an `application/problem+json` body, is removed from the list as well; any other 404 keeps the trace in the list.
 
+### DN42
+
+Select `--mode dn42` to annotate hops with the
+[DN42 IPDB Rust SDK](https://github.com/bird-chinese-community/DN42-IPDB-SDK/tree/main/rust).
+The ASN column uses the database's origin ASN. Host names come from PTR
+observations for the exact hop address; missing records remain unnamed.
+DN42 mode keeps routes local and skips public source-address discovery and IPMap upload.
+
+```sh
+sudo xmtr --mode dn42 --dn42-refresh 172.20.0.53
+sudo xmtr --mode dn42 172.20.0.53
+sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
+```
+
+`--dn42-refresh` explicitly downloads and verifies the latest release before
+tracing. Subsequent runs read the verified cache under the current user's cache
+directory, in `xmtr/dn42-ipdb/rust/v2`. Run both commands as the same user to
+reuse that cache. Download failures stop the run. `--dn42-db` reads an extracted
+release directory containing all seven SDK bundle files and does not download.
+
+`--dns` still selects the resolver for target hostnames; use a resolver that
+can resolve `.dn42` names. Hop annotations use the local database without DNS
+requests. `--no-rdns` skips annotations and does not require a database.
+`--json` prints the existing route payload, including hop ASNs and host names.
+The default mode is `internet`.
+
 ### DNS
 
 `--dns` selects the resolver for target names, the upload, reverse DNS and AS lookups.
@@ -341,7 +367,10 @@ Usage: xmtr [OPTIONS] <TARGET>...
 -j, --parallel <N>                   routes traced at the same time (default: all routes, at most 8)
 -u, --unprivileged                   unprivileged sockets (macOS)
     --dns <RESOLVER>                 see DNS above (default auto)
-    --no-rdns                        skip reverse DNS and AS lookups
+    --mode <internet|dn42>           annotation source; DN42 keeps routes local (default internet)
+    --dn42-db <DIRECTORY>            extracted DN42 release bundle
+    --dn42-refresh                   download and verify the latest DN42 bundle
+    --no-rdns                        skip host name and AS annotations
     --no-upload                      print the routes only
     --hide-origin                    upload without the source address of the routes
     --pin <PIN>                      four digits from 0-8 without 4
@@ -372,7 +401,7 @@ xmtr asks about errors and crashes only when stdin and stderr are a terminal and
 cargo build --release --workspace
 ```
 
-The workspace builds `xmtr` and `xmtr-installer` and needs Rust 1.88 or later. Set `XMTR_TELEMETRY_DSN` to a GlitchTip or Sentry DSN to build with [telemetry](#telemetry). `nix build` builds `xmtr` from the flake.
+The workspace builds `xmtr` and `xmtr-installer` and needs Rust 1.89 or later. Set `XMTR_TELEMETRY_DSN` to a GlitchTip or Sentry DSN to build with [telemetry](#telemetry). `nix build` builds `xmtr` from the flake.
 
 Release builds use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) for Linux, Windows and macOS, [cross](https://github.com/cross-rs/cross) for FreeBSD, powerpc64 and sparc64, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) for Android; see `.github/workflows/release.yml` and [`scripts/ci`](scripts/ci/README.md). The workspace builds against a patched trippy-core in `vendor/` that traces IPv4 on Android; see [vendor/README.md](vendor/README.md).
 

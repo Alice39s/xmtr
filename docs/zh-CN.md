@@ -306,6 +306,28 @@ xmtr traces delete <TRACE>       # 从网关和列表中删除这条记录
 
 `<TRACE>` 可以是 trace ID、IPMap 链接或管理链接。admin key 依次取自 `--admin-key`、管理链接和列表；网关依次取自 `--api`、列表、`XMTR_API` 和默认网关。`--dns` 指定解析网关用的解析器，取值与追踪时相同。网关上已经没有的记录（网关以 HTTP 404 和 `application/problem+json` 响应体回应）也会从列表中移除；其他 404 响应不会移除列表里的记录。
 
+### DN42
+
+`--mode dn42` 通过 [DN42 IPDB Rust SDK](https://github.com/bird-chinese-community/DN42-IPDB-SDK/tree/main/rust)
+读取每一跳的 ASN 和对应 IP 的 PTR 主机名。数据库没有记录时，对应字段留空。
+DN42 模式把路由保留在本地，跳过公网出口地址查询和 IPMap 上传。
+
+```sh
+sudo xmtr --mode dn42 --dn42-refresh 172.20.0.53
+sudo xmtr --mode dn42 172.20.0.53
+sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
+```
+
+`--dn42-refresh` 在追踪前下载并校验最新数据库，下载失败会终止运行。
+后续运行从当前用户缓存目录下的 `xmtr/dn42-ipdb/rust/v2` 读取数据库；
+用同一个用户运行两条命令才能复用缓存。
+`--dn42-db` 读取包含 SDK 所需七个文件的已解压数据库目录，不执行下载。
+
+`--dns` 仍负责解析目标主机名，追踪 `.dn42` 域名时需要能解析它的 DNS 服务器。
+每一跳的主机名和 ASN 来自本地数据库，不发起 DNS 请求。
+`--no-rdns` 跳过这些字段的查询，不需要数据库。
+`--json` 输出现有路由格式，包含每一跳的 ASN 和主机名。默认模式为 `internet`。
+
 ### DNS
 
 `--dns` 指定用于解析目标名称、上传、反向解析和 AS 查询的解析器。
@@ -341,7 +363,10 @@ xmtr traces delete <TRACE>       # 从网关和列表中删除这条记录
 -j, --parallel <N>                   同时追踪的路由数（默认等于路由总数，最多 8）
 -u, --unprivileged                   使用非特权套接字（macOS）
     --dns <RESOLVER>                 见上文 DNS 一节（默认 auto）
-    --no-rdns                        跳过反向解析和 AS 查询
+    --mode <internet|dn42>           查询来源；DN42 路由保留在本地（默认 internet）
+    --dn42-db <DIRECTORY>            已解压的 DN42 数据库目录
+    --dn42-refresh                   下载并校验最新 DN42 数据库
+    --no-rdns                        跳过主机名和 AS 查询
     --no-upload                      只输出路由
     --hide-origin                    上传时不带路由的源地址
     --pin <PIN>                      四位数字，取 0-8，不含 4
@@ -372,7 +397,7 @@ xmtr traces delete <TRACE>       # 从网关和列表中删除这条记录
 cargo build --release --workspace
 ```
 
-工作区会构建 `xmtr` 和 `xmtr-installer`，需要 Rust 1.88 或更新版本。把 `XMTR_TELEMETRY_DSN` 设为 GlitchTip 或 Sentry 的 DSN，构建出的程序就带[遥测](#遥测)。`nix build` 从 flake 构建 `xmtr`。
+工作区会构建 `xmtr` 和 `xmtr-installer`，需要 Rust 1.89 或更新版本。把 `XMTR_TELEMETRY_DSN` 设为 GlitchTip 或 Sentry 的 DSN，构建出的程序就带[遥测](#遥测)。`nix build` 从 flake 构建 `xmtr`。
 
 发布构建用 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) 编译 Linux、Windows 和 macOS 版本，用 [cross](https://github.com/cross-rs/cross) 编译 FreeBSD、powerpc64 和 sparc64 版本，用 [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) 编译 Android 版本；见 `.github/workflows/release.yml` 和 [`scripts/ci`](../scripts/ci/README.md)。工作区使用 `vendor/` 里打过补丁的 trippy-core，让 Android 能追踪 IPv4；见 [vendor/README.md](../vendor/README.md)。
 

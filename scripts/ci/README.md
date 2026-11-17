@@ -35,7 +35,7 @@ uv run --project scripts/ci xmtr-ci check scripts
 uv run --project scripts/ci xmtr-ci check rust
 ```
 
-Use stable Cargo for `check rust`. Its final step runs `cargo package --workspace --exclude xmtr-installer --locked` to build the crates that will be published and verify their packaged dependencies. xmtr still supports Rust 1.88, which the separate MSRV jobs check.
+Use stable Cargo for `check rust`. Its final step runs `cargo package --workspace --exclude xmtr-installer --locked` to build the crates that will be published and verify their packaged dependencies. xmtr supports Rust 1.89, which the separate MSRV jobs check.
 
 ## OpenWrt packages
 

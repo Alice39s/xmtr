@@ -17,10 +17,9 @@ use crate::{manage, telemetry};
 /// The update check gives up after this long and the run ends as if there were no update.
 const CHECK_LIMIT: Duration = Duration::from_secs(3);
 
-/// The offer needs someone at the terminal to answer it, and runs only without `--no-upload`,
-/// which keeps the run off the network.
+/// The offer needs someone at the terminal to answer it and a run that uploads routes.
 pub const fn wanted(cli: &Cli, stdin_terminal: bool, stderr_terminal: bool) -> bool {
-    cli::interactive(cli, stdin_terminal, stderr_terminal) && !cli.no_upload
+    cli::interactive(cli, stdin_terminal, stderr_terminal) && cli.uploads()
 }
 
 /// Package managers that own the binary at a path containing the marker, and the command that
@@ -189,7 +188,13 @@ mod tests {
         ));
         assert!(!wanted(&cli(&[]), false, true));
         assert!(!wanted(&cli(&[]), true, false));
-        for args in [&["--json"][..], &["--quiet"], &["-q"], &["--no-upload"]] {
+        for args in [
+            &["--json"][..],
+            &["--quiet"],
+            &["-q"],
+            &["--no-upload"],
+            &["--mode", "dn42"],
+        ] {
             assert!(!wanted(&cli(args), true, true), "{args:?}");
         }
     }
