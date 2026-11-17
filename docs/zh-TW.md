@@ -124,7 +124,7 @@ xmtr self uninstall           # 刪除當前程式
 
 `--force` 會重新安裝當前已是最新的版本。通過包管理器或 Linux 軟體源安裝的，請用對應的包管理器更新。
 
-在終端裡執行結束後，xmtr 會查詢最新版本，最多等 3 秒。有新版本時，它先問要不要安裝，再問要不要用新版本重新運行同一條命令；兩次都直接按 Enter 表示同意。如果程式由包管理器管理，或者所在目錄不可寫，xmtr 改為輸出對應的更新命令。帶 `--json`、`--quiet` 或 `--no-upload` 的執行，以及 stdin 和 stderr 不是終端的執行，都不會查詢。
+在終端裡執行結束後，xmtr 會查詢最新版本，最多等 3 秒。有新版本時，它先問要不要安裝，再問要不要用新版本重新運行同一條命令；兩次都直接按 Enter 表示同意。如果程式由包管理器管理，或者所在目錄不可寫，xmtr 改為輸出對應的更新命令。帶 `--json`、`--quiet`、`--no-upload` 或 `--mode dn42` 的執行，以及 stdin 和 stderr 不是終端的執行，都不會查詢。
 
 ### 校驗下載的檔案
 
@@ -273,6 +273,7 @@ Anyone with the admin link can delete this trace. Run xmtr traces to see these l
 | `--pin 2580` | 開啟連結後要輸入這個四位 PIN（數字 0-8，不含 4）才能檢視 |
 | `--hide-origin` | 上傳時去掉源地址；前幾跳仍可能暴露出發的網路 |
 | `--no-upload` | 路由只留在本機，不上傳 |
+| `--mode dn42` | 路由只留在本機，見 [DN42](#dn42) |
 
 IPMap 把探測包離開時的公網地址作為每條路由的起點。如果本地地址不是公網地址（私有地址、CGNAT、ULA、鏈路本地地址或其他保留地址），xmtr 會從這個本地地址直接向閘道器發一個 HTTPS 請求，不經過代理設定，取閘道器看到的地址。這個請求在追蹤期間進行，最多等 3 秒；拿不到公網源地址的路由上傳時不帶源地址。
 
@@ -318,11 +319,11 @@ sudo xmtr --mode dn42 172.20.0.53
 sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 ```
 
-`--dn42-refresh` 在追蹤前下載並校驗最新資料庫，下載失敗會終止執行。
+`--dn42-refresh` 在追蹤前下載並校驗最新資料庫，限時 5 分鐘，下載失敗會終止執行。
 資料庫從 GitHub 上的 [DN42 IPDB releases](https://github.com/bird-chinese-community/DN42-IPDB-Releases/releases) 下載，
 設定了 `HTTPS_PROXY`、`HTTP_PROXY` 或 `ALL_PROXY` 時經由代理下載。
-後續執行從當前使用者快取目錄下的 `xmtr/dn42-ipdb/rust/v2` 讀取資料庫；
-用同一個使用者執行兩條命令才能複用快取。
+後續執行從執行 xmtr 的使用者的快取目錄下的 `xmtr/dn42-ipdb/rust/v2` 讀取資料庫，
+用 `sudo` 執行時是使用者資料庫裡 root 的快取目錄；用同一個使用者執行兩條命令才能複用快取。
 `--dn42-db` 讀取包含 SDK 所需七個檔案的已解壓資料庫目錄，不執行下載，適合只能訪問 DN42 的主機。
 
 `--dns` 仍負責解析目標主機名，追蹤 `.dn42` 域名時需要能解析它的 DNS 伺服器。
