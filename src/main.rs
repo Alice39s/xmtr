@@ -317,8 +317,8 @@ fn finish(
 }
 
 fn run(cli: &Cli, console: Console, telemetry: &Telemetry) -> Result<ExitCode> {
-    if cli.dn42_refresh {
-        console.remark("Downloading DN42 IPDB");
+    if cli.dn42_refresh && !cli.quiet {
+        console.remark("downloading the DN42 IPDB release");
     }
     let dn42 = dn42::open(cli)?;
     let board = Arc::new(Board::new(&cli.targets));
