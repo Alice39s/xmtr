@@ -300,10 +300,8 @@ mod tests {
             crate::cli::DN42_API,
             "https://XMTR.IP-API.DN42.:8443/api/v1/traces",
         ] {
-            let RootCerts::Specific(roots) = config(UPLOAD_TIMEOUT, &url.parse().unwrap())
-                .tls_config()
-                .root_certs()
-            else {
+            let config = config(UPLOAD_TIMEOUT, &url.parse().unwrap());
+            let RootCerts::Specific(roots) = config.tls_config().root_certs() else {
                 panic!("{url} does not use the DN42 root");
             };
             assert_eq!(roots.len(), 1, "{url}");
