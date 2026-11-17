@@ -323,8 +323,11 @@ sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 `--dn42-refresh` explicitly downloads and verifies the latest release before
 tracing. Subsequent runs read the verified cache under the current user's cache
 directory, in `xmtr/dn42-ipdb/rust/v2`. Run both commands as the same user to
-reuse that cache. Download failures stop the run. `--dn42-db` reads an extracted
-release directory containing all seven SDK bundle files and does not download.
+reuse that cache. Download failures stop the run. The download comes from the
+[DN42 IPDB releases](https://github.com/bird-chinese-community/DN42-IPDB-Releases/releases)
+on GitHub and uses `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` when set. `--dn42-db`
+reads an extracted release directory containing all seven SDK bundle files and does
+not download, for hosts that reach only DN42.
 
 `--dns` still selects the resolver for target hostnames; use a resolver that
 can resolve `.dn42` names. Hop annotations use the local database without DNS

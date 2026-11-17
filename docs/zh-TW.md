@@ -319,9 +319,11 @@ sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 ```
 
 `--dn42-refresh` 在追蹤前下載並校驗最新資料庫，下載失敗會終止執行。
+資料庫從 GitHub 上的 [DN42 IPDB releases](https://github.com/bird-chinese-community/DN42-IPDB-Releases/releases) 下載，
+設定了 `HTTPS_PROXY`、`HTTP_PROXY` 或 `ALL_PROXY` 時經由代理下載。
 後續執行從當前使用者快取目錄下的 `xmtr/dn42-ipdb/rust/v2` 讀取資料庫；
 用同一個使用者執行兩條命令才能複用快取。
-`--dn42-db` 讀取包含 SDK 所需七個檔案的已解壓資料庫目錄，不執行下載。
+`--dn42-db` 讀取包含 SDK 所需七個檔案的已解壓資料庫目錄，不執行下載，適合只能訪問 DN42 的主機。
 
 `--dns` 仍負責解析目標主機名，追蹤 `.dn42` 域名時需要能解析它的 DNS 伺服器。
 每一跳的主機名和 ASN 來自本地資料庫，不發起 DNS 請求。
