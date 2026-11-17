@@ -75,8 +75,8 @@ fn policy(cli: &Cli, do_not_track: bool, interactive: bool) -> Option<Policy> {
 }
 
 /// `dsn` at the xmtr gateway on DN42 when the run reaches the network through DN42: at the
-/// `--api` gateway under `.dn42`, or at [`cli::DN42_API`] in DN42 mode. The gateway relays the
-/// reports to the host of the DSN.
+/// `--api` gateway under `.dn42`, or at [`cli::DN42_API`] in DN42 mode. The gateway relays
+/// `api/<project>/envelope/` below its path to the host of the DSN.
 fn through_gateway(dsn: Dsn, cli: &Cli) -> Dsn {
     let gateway = if cli.dn42_api() {
         cli.api.as_str()
@@ -93,13 +93,14 @@ fn through_gateway(dsn: Dsn, cli: &Cli) -> Dsn {
     let port = gateway
         .port()
         .map_or_else(String::new, |port| format!(":{port}"));
+    // The gateway serves the envelope endpoint below its own path, like the API.
+    let path = gateway.path().trim_end_matches('/');
     format!(
-        "{}://{key}@{}{port}{}{}",
+        "{}://{key}@{}{port}{path}/{}",
         gateway.scheme(),
         gateway
             .host_str()
             .expect("a gateway under .dn42 has a host"),
-        dsn.path(),
         dsn.project_id()
     )
     .parse()
@@ -254,6 +255,7 @@ fn run_names(cli: &Cli, listed: &[String]) -> Vec<String> {
         .chain(listed.iter().map(String::as_str));
     for api in apis {
         if api != DEFAULT_API
+            && api != cli::DN42_API
             && let Ok(uri) = api.parse::<ureq::http::Uri>()
             && let Some(host) = uri.host()
         {
@@ -620,6 +622,23 @@ mod tests {
             endpoint(&["--api", "http://XMTR.ip-api.dn42:8080", "172.20.0.53"]),
             "http://xmtr.ip-api.dn42:8080/api/5/envelope/"
         );
+        assert_eq!(
+            endpoint(&["--api", "https://gw.example.dn42/xmtr/", "172.20.0.53"]),
+            "https://gw.example.dn42/xmtr/api/5/envelope/"
+        );
+        assert_eq!(
+            endpoint(&["--api", "ftp://gw.example.dn42", "172.20.0.53"]),
+            "https://api-user.xmsl.dev/api/5/envelope/"
+        );
+        let prefixed: Dsn = "https://public:secret@api-user.xmsl.dev/glitchtip/5"
+            .parse()
+            .unwrap();
+        let relayed = through_gateway(prefixed, &cli(&["--mode", "dn42", "172.20.0.53"]));
+        assert_eq!(
+            relayed.envelope_api_url().as_str(),
+            "https://xmtr.ip-api.dn42/api/5/envelope/"
+        );
+        assert_eq!(relayed.secret_key(), Some("secret"));
         let relayed = through_gateway(dsn.clone(), &cli(&["--mode", "dn42", "172.20.0.53"]));
         assert_eq!(relayed.public_key(), "public");
         assert_eq!(relayed.project_id(), dsn.project_id());

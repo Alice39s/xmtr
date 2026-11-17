@@ -337,7 +337,7 @@ sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 XMTR_API=https://xmtr.ip-api.dn42 sudo -E xmtr 172.20.0.53
 ```
 
-上傳後的連結在公網的 xmsl.dev IPMap 上開啟。`.dn42` 下的閘道器必須出示 DN42 根 CA 簽發的證書，xmtr 內建了這個根證書；其他主機仍使用 Mozilla 根證書。經這類閘道器上傳的路由不帶公網源地址，因為閘道器只能看到它自己的地址。
+上傳後的連結在公網的 xmsl.dev IPMap 上開啟。`.dn42` 下的閘道器必須出示 DN42 根 CA 簽發的證書，xmtr 內建了這個根證書；其他主機仍使用 Mozilla 根證書。通往這類閘道器的 `https://` 代理也按同一個根證書校驗，所以請直連，或使用 `http://`、SOCKS 代理。經這類閘道器上傳的路由不帶公網源地址，因為閘道器只能看到它自己的地址。
 
 ### DNS
 

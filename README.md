@@ -346,8 +346,10 @@ XMTR_API=https://xmtr.ip-api.dn42 sudo -E xmtr 172.20.0.53
 
 The links of uploaded traces open on IPMap at xmsl.dev on the public Internet. A
 gateway under `.dn42` must show a certificate of the DN42 root CA, which xmtr carries;
-other hosts keep the Mozilla roots. Uploads through such a gateway carry no public
-source address, because the gateway would see its own.
+other hosts keep the Mozilla roots. An `https://` proxy on the way to such a gateway
+is checked against the same root, so reach it directly or through an `http://` or
+SOCKS proxy. Uploads through such a gateway carry no public source address, because
+the gateway would see its own.
 
 ### DNS
 
