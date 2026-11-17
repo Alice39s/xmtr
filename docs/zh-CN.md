@@ -337,7 +337,7 @@ sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 XMTR_API=https://xmtr.ip-api.dn42 sudo -E xmtr 172.20.0.53
 ```
 
-上传后的链接在公网的 xmsl.dev IPMap 上打开。`.dn42` 下的网关必须出示 DN42 根 CA 签发的证书，xmtr 内置了这个根证书；其他主机仍使用 Mozilla 根证书。经这类网关上传的路由不带公网源地址，因为网关只能看到它自己的地址。
+上传后的链接在公网的 xmsl.dev IPMap 上打开。`.dn42` 下的网关必须出示 DN42 根 CA 签发的证书，xmtr 内置了这个根证书；其他主机仍使用 Mozilla 根证书。通往这类网关的 `https://` 代理也按同一个根证书校验，所以请直连，或使用 `http://`、SOCKS 代理。经这类网关上传的路由不带公网源地址，因为网关只能看到它自己的地址。
 
 ### DNS
 

@@ -254,9 +254,12 @@ impl Cli {
         !self.no_upload && matches!(self.mode, Mode::Internet)
     }
 
-    /// True when `--api` names a gateway under `.dn42`, such as [`DN42_API`].
+    /// True when `--api` is an HTTP or HTTPS gateway under `.dn42`, such as [`DN42_API`].
     pub fn dn42_api(&self) -> bool {
-        Url::parse(&self.api).is_ok_and(|url| url.host_str().is_some_and(crate::dn42::is_dn42_name))
+        Url::parse(&self.api).is_ok_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some_and(crate::dn42::is_dn42_name)
+        })
     }
 }
 
