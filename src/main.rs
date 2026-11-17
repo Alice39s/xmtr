@@ -13,6 +13,7 @@ mod telemetry;
 mod traces;
 mod update;
 mod upload;
+mod user_dir;
 
 use std::collections::HashMap;
 use std::io::IsTerminal;
