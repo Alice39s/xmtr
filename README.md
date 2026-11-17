@@ -124,7 +124,7 @@ xmtr self uninstall           # delete this binary
 
 `--force` reinstalls a release that is already installed. Update packages from a package manager or a Linux repository with that manager instead.
 
-After a run in a terminal, xmtr looks up the latest release, waiting at most 3 seconds. When it is newer, xmtr asks whether to install it and then whether to run the same command again with the new version; Enter answers yes to both. When a package manager owns the binary, or its directory is not writable, xmtr prints the command that updates it instead. Runs with `--json`, `--quiet` or `--no-upload`, and runs without a terminal on stdin and stderr, skip the lookup.
+After a run in a terminal, xmtr looks up the latest release, waiting at most 3 seconds. When it is newer, xmtr asks whether to install it and then whether to run the same command again with the new version; Enter answers yes to both. When a package manager owns the binary, or its directory is not writable, xmtr prints the command that updates it instead. Runs with `--json`, `--quiet`, `--no-upload` or `--mode dn42`, and runs without a terminal on stdin and stderr, skip the lookup.
 
 ### Verify a download
 
@@ -273,6 +273,7 @@ The upload returns a trace ID and a link to its map. The trace ID is a snowflake
 | `--pin 2580` | viewers must enter the four-digit PIN (digits 0-8, no 4) after opening the link |
 | `--hide-origin` | the source address is left out; the first hops may still show the network |
 | `--no-upload` | the routes stay on this machine |
+| `--mode dn42` | the routes stay on this machine; see [DN42](#dn42) |
 
 IPMap starts each route at the public address its probes left from. When their local address is not public (private, CGNAT, ULA, link-local or another reserved range), xmtr takes the address the gateway sees on an HTTPS request sent from that local address straight to the gateway, ignoring proxy settings. The request runs during the trace and waits at most 3 seconds; a route without a public source address is uploaded without one.
 
@@ -321,9 +322,10 @@ sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 ```
 
 `--dn42-refresh` explicitly downloads and verifies the latest release before
-tracing. Subsequent runs read the verified cache under the current user's cache
-directory, in `xmtr/dn42-ipdb/rust/v2`. Run both commands as the same user to
-reuse that cache. Download failures stop the run. The download comes from the
+tracing, within 5 minutes. Subsequent runs read the verified cache in
+`xmtr/dn42-ipdb/rust/v2` under the cache directory of the user xmtr runs as; under
+`sudo` that is root's, from the user database. Run both commands as the same user
+to reuse that cache. Download failures stop the run. The download comes from the
 [DN42 IPDB releases](https://github.com/bird-chinese-community/DN42-IPDB-Releases/releases)
 on GitHub and uses `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` when set. `--dn42-db`
 reads an extracted release directory containing all seven SDK bundle files and does
