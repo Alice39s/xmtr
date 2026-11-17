@@ -1,6 +1,7 @@
 mod board;
 mod cli;
 mod convergence;
+mod dn42;
 mod dns;
 mod live;
 mod manage;
@@ -24,7 +25,7 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 
 use crate::board::Board;
-use crate::cli::{Cli, Command, SelfCommand};
+use crate::cli::{Cli, Command, Mode, SelfCommand};
 use crate::dns::Dns;
 use crate::live::{Console, Live, Note};
 use crate::output::Stdout;
@@ -65,11 +66,11 @@ fn settings(cli: &Cli, privilege: trippy_core::PrivilegeMode) -> Settings {
 
 /// The public source address of the routes is looked up only for uploads that share their origin.
 fn sends_source(cli: &Cli) -> bool {
-    !cli.hide_origin && !cli.no_upload
+    !cli.hide_origin && cli.uploads()
 }
 
 /// Resolves, traces, annotates and uploads, recording each step on `board`.
-fn work(cli: &Cli, board: &Board) -> Result<Report> {
+fn work(cli: &Cli, board: &Board, dn42: Option<&dn42_ipdb::Bundle>) -> Result<Report> {
     let dns = Dns::new(&cli.dns)?;
     let plan = plan::build(cli, &dns)?;
     board.start_trace(&plan.jobs);
@@ -123,18 +124,21 @@ fn work(cli: &Cli, board: &Board) -> Result<Report> {
     let mut unanswered = 0;
     if !cli.no_rdns && !routes.is_empty() {
         board.start_lookup();
-        unanswered = dns.annotate(&mut routes, |answered, total| {
-            board.set_lookup(answered, total);
-        });
+        let progress = |answered, total| board.set_lookup(answered, total);
+        if let Some(bundle) = dn42 {
+            dn42::annotate(bundle, &mut routes, progress)?;
+        } else {
+            unanswered = dns.annotate(&mut routes, progress);
+        }
     }
     let body = model::Upload {
         schema: 1,
         client: model::Client::current(),
-        share_origin: !cli.hide_origin,
+        share_origin: !cli.hide_origin && cli.mode == Mode::Internet,
         pin: cli.pin.clone(),
         routes,
     };
-    let upload = (!cli.no_upload && !body.routes.is_empty()).then(|| {
+    let upload = (cli.uploads() && !body.routes.is_empty()).then(|| {
         board.start_upload();
         let result = upload::upload(&cli.api, &body, &dns);
         if let Err(error) = &result {
@@ -242,7 +246,7 @@ fn report(cli: &Cli, console: Console, report: Report) -> Result<ExitCode> {
 }
 
 fn live_options(cli: &Cli) -> Result<live::Options> {
-    let upload = if cli.no_upload {
+    let upload = if !cli.uploads() {
         None
     } else {
         let uri: ureq::http::Uri = cli
@@ -313,6 +317,10 @@ fn finish(
 }
 
 fn run(cli: &Cli, console: Console, telemetry: &Telemetry) -> Result<ExitCode> {
+    if cli.dn42_refresh {
+        console.remark("Downloading DN42 IPDB");
+    }
+    let dn42 = dn42::open(cli)?;
     let board = Arc::new(Board::new(&cli.targets));
     let live = if cli.quiet {
         None
@@ -331,7 +339,7 @@ fn run(cli: &Cli, console: Console, telemetry: &Telemetry) -> Result<ExitCode> {
             }
         }
     };
-    let result = work(cli, &board);
+    let result = work(cli, &board, dn42.as_ref());
     let traced = result
         .as_ref()
         .is_ok_and(|report| !report.body.routes.is_empty());
@@ -404,6 +412,7 @@ mod tests {
             &["--hide-origin"][..],
             &["--no-upload"],
             &["--hide-origin", "--no-upload"],
+            &["--mode", "dn42"],
         ] {
             assert!(!sends_source(&parse(args).unwrap()), "{args:?}");
         }

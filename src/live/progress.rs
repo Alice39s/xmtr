@@ -186,7 +186,7 @@ fn footer(state: &State, options: &Options, tick: usize) -> Line<'static> {
         }
         Phase::Lookup => {
             let (answered, total) = state.lookup;
-            spans.push(Span::raw("Reverse DNS and AS  "));
+            spans.push(Span::raw("Host names and AS   "));
             let ratio = if total == 0 {
                 0.0
             } else {

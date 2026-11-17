@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -23,6 +24,18 @@ pub struct Cli {
     /// Hostnames or IP addresses to trace.
     #[arg(required = true, value_name = "TARGET")]
     pub targets: Vec<String>,
+
+    /// Address annotations: internet DNS or local DN42 IPDB. DN42 keeps routes local.
+    #[arg(long, value_enum, default_value_t = Mode::Internet)]
+    pub mode: Mode,
+
+    /// Directory containing a DN42 IPDB release bundle.
+    #[arg(long, value_name = "DIRECTORY", conflicts_with = "dn42_refresh")]
+    pub dn42_db: Option<PathBuf>,
+
+    /// Download and verify the latest DN42 bundle before tracing.
+    #[arg(long)]
+    pub dn42_refresh: bool,
 
     /// Probe protocol; `auto` starts with ICMP and, when ICMP has not reached the target after 4
     /// rounds, also traces TCP port 80, or UDP with unprivileged sockets.
@@ -75,7 +88,7 @@ pub struct Cli {
     #[arg(long, default_value = "auto", value_name = "RESOLVER")]
     pub dns: DnsSpec,
 
-    /// Skip reverse DNS and AS lookups.
+    /// Skip host name and AS annotations.
     #[arg(long)]
     pub no_rdns: bool,
 
@@ -227,6 +240,18 @@ pub enum ProtocolChoice {
     Tcp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Mode {
+    Internet,
+    Dn42,
+}
+
+impl Cli {
+    pub const fn uploads(&self) -> bool {
+        !self.no_upload && matches!(self.mode, Mode::Internet)
+    }
+}
+
 fn duration_at_least(value: &str, min: Duration) -> Result<Duration, String> {
     let duration = humantime::parse_duration(value)
         .map_err(|error| format!("{error}; use a duration such as 45s, 500ms or 2m"))?;
@@ -266,6 +291,22 @@ const SUBCOMMANDS: [(&str, &str); 2] = [
 /// Arguments that each parse on their own but do not make a run: a subcommand read as the first
 /// target, or a time limit that no round fits in.
 pub fn conflict(cli: &Cli) -> Option<String> {
+    if cli.mode != Mode::Dn42 && (cli.dn42_db.is_some() || cli.dn42_refresh) {
+        return Some("--dn42-db and --dn42-refresh require --mode dn42".to_owned());
+    }
+    if cli.mode == Mode::Dn42 {
+        if cli.pin.is_some() || cli.hide_origin {
+            return Some(
+                "--mode dn42 keeps routes local; --pin and --hide-origin require internet mode"
+                    .to_owned(),
+            );
+        }
+        if cli.no_rdns && (cli.dn42_db.is_some() || cli.dn42_refresh) {
+            return Some(
+                "--no-rdns skips DN42 annotations; omit --dn42-db and --dn42-refresh".to_owned(),
+            );
+        }
+    }
     subcommand_as_target(cli).or_else(|| {
         // trippy reports a round only when it ends, after at least one interval.
         (cli.interval >= cli.time_limit).then(|| {
@@ -305,6 +346,32 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn dn42_options_require_the_mode_and_annotations() {
+        let parse =
+            |args: &[&str]| Cli::try_parse_from([&["xmtr"], args, &["172.20.0.1"]].concat());
+        assert!(parse(&[]).unwrap().uploads());
+        let dn42 = parse(&["--mode", "dn42"]).unwrap();
+        assert!(!dn42.uploads());
+        assert_eq!(conflict(&dn42), None);
+        for args in [
+            &["--dn42-db", "bundle"][..],
+            &["--dn42-refresh"],
+            &["--mode", "dn42", "--pin", "2580"],
+            &["--mode", "dn42", "--hide-origin"],
+            &["--mode", "dn42", "--no-rdns", "--dn42-refresh"],
+            &["--mode", "dn42", "--no-rdns", "--dn42-db", "bundle"],
+        ] {
+            assert!(conflict(&parse(args).unwrap()).is_some(), "{args:?}");
+        }
+        assert!(parse(&["--mode", "dn42", "--dn42-db", "bundle", "--dn42-refresh"]).is_err());
+        assert!(parse(&["--mode", "invalid"]).is_err());
+        assert_eq!(
+            conflict(&parse(&["--mode", "dn42", "--no-rdns"]).unwrap()),
+            None
+        );
+    }
 
     #[test]
     fn accepts_pins_from_0_to_8_without_4() {

@@ -52,7 +52,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.89.0
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all --check

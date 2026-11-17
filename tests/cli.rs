@@ -68,3 +68,23 @@ fn options_without_a_target_fail() {
         .expect("xmtr starts");
     assert_eq!(output.status.code(), Some(2));
 }
+
+#[test]
+fn missing_dn42_bundle_stops_before_target_resolution() {
+    let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/dn42/missing");
+    let output = Command::new(env!("CARGO_BIN_EXE_xmtr"))
+        .args(["--mode", "dn42", "--dn42-db"])
+        .arg(missing)
+        .args(["--progress", "plain", "does-not-exist.invalid"])
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .expect("xmtr starts");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("opening DN42 bundle"), "{stderr}");
+    assert!(
+        !stderr.contains("resolving does-not-exist.invalid"),
+        "{stderr}"
+    );
+    assert!(output.stdout.is_empty());
+}
