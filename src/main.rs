@@ -66,8 +66,9 @@ fn settings(cli: &Cli, privilege: trippy_core::PrivilegeMode) -> Settings {
 }
 
 /// The public source address of the routes is looked up only for uploads that share their origin.
+/// A gateway on DN42 sees its own public address, so uploads through one carry no source address.
 fn sends_source(cli: &Cli) -> bool {
-    !cli.hide_origin && cli.uploads()
+    !cli.hide_origin && cli.uploads() && !cli.dn42_api()
 }
 
 /// Resolves, traces, annotates and uploads, recording each step on `board`.
@@ -414,6 +415,7 @@ mod tests {
             &["--no-upload"],
             &["--hide-origin", "--no-upload"],
             &["--mode", "dn42"],
+            &["--api", "https://xmtr.ip-api.dn42"],
         ] {
             assert!(!sends_source(&parse(args).unwrap()), "{args:?}");
         }

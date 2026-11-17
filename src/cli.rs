@@ -2,10 +2,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use url::Url;
 
 use crate::dns::DnsSpec;
 
 pub const DEFAULT_API: &str = "https://stage-info-api.xmsl.dev";
+/// The gateway on DN42 that relays the API and the error reports to their public services.
+pub const DN42_API: &str = "https://xmtr.ip-api.dn42";
 
 /// Trace several targets in parallel with trippy, then publish the routes to xmsl.dev IPMap.
 #[derive(Debug, Parser)]
@@ -249,6 +252,11 @@ pub enum Mode {
 impl Cli {
     pub const fn uploads(&self) -> bool {
         !self.no_upload && matches!(self.mode, Mode::Internet)
+    }
+
+    /// True when `--api` names a gateway under `.dn42`, such as [`DN42_API`].
+    pub fn dn42_api(&self) -> bool {
+        Url::parse(&self.api).is_ok_and(|url| url.host_str().is_some_and(crate::dn42::is_dn42_name))
     }
 }
 

@@ -331,6 +331,14 @@ sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 `--no-rdns` 跳过这些字段的查询，不需要数据库。
 `--json` 输出现有路由格式，包含每一跳的 ASN 和主机名。默认模式为 `internet`。
 
+只能访问 DN42 的主机可以经 `https://xmtr.ip-api.dn42` 网关上传，网关把 API 请求转发到公网网关：
+
+```sh
+XMTR_API=https://xmtr.ip-api.dn42 sudo -E xmtr 172.20.0.53
+```
+
+上传后的链接在公网的 xmsl.dev IPMap 上打开。`.dn42` 下的网关必须出示 DN42 根 CA 签发的证书，xmtr 内置了这个根证书；其他主机仍使用 Mozilla 根证书。经这类网关上传的路由不带公网源地址，因为网关只能看到它自己的地址。
+
 ### DNS
 
 `--dns` 指定用于解析目标名称、上传、反向解析和 AS 查询的解析器。
@@ -391,6 +399,8 @@ sudo xmtr --mode dn42 --dn42-db /path/to/bundle fd42:1234::1
 | 崩溃 | 发生 panic 后，你回答 yes 时 | panic 信息及其源码位置、xmtr 版本、操作系统、CPU 架构 |
 
 只有 stdin 和 stderr 都是终端，并且没有设置 `--json` 或 `--quiet` 时，xmtr 才会询问是否发送错误和崩溃报告。默认回答是 no，没有终端时什么都不发送。发送前，xmtr 把 IP 地址替换成 `[ip]`；把目标、以主机名给出的解析器或网关、代理主机替换成 `[host]`；把用户主目录替换成 `~`；把路径里的用户名替换成 `[user]`；并去掉 URL 里的凭据。报告不包含本机名称和命令行。GlitchTip 会记录报告的来源地址，并截断到网络前缀。
+
+使用 `--mode dn42`，或 `--api` 是 `.dn42` 下的网关时，报告经 DN42 网关（`https://xmtr.ip-api.dn42` 或指定的网关）转发到 GlitchTip。
 
 `DO_NOT_TRACK=1` 关闭所有报告和询问（[Console Do Not Track](https://consoledonottrack.com)）。
 
