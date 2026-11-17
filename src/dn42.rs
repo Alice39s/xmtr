@@ -1,12 +1,18 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use dn42_ipdb::{Bundle, Cache, IpLookup, Observation};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::cli::{Cli, Mode};
 use crate::model::Route;
+use crate::user_dir::{self, Kind};
+
+/// A release is about 30 MB; the limit covers the wait for another update and every download.
+const REFRESH_LIMIT: Duration = Duration::from_secs(300);
 
 pub fn open(cli: &Cli) -> Result<Option<Bundle>> {
     if cli.mode != Mode::Dn42 || cli.no_rdns {
@@ -17,10 +23,13 @@ pub fn open(cli: &Cli) -> Result<Option<Bundle>> {
             .with_context(|| format!("opening DN42 bundle {}", directory.display()))
             .map(Some);
     }
-    let root = dirs::cache_dir()
-        .context("locating the cache directory; pass --dn42-db DIRECTORY")?
-        .join("xmtr/dn42-ipdb");
-    let cache = Cache::new(&root).context("configuring the DN42 cache")?;
+    let root = user_dir::dir(Kind::Cache)?
+        .context("root has no home directory in the user database; pass --dn42-db DIRECTORY")?
+        .join("xmtr")
+        .join("dn42-ipdb");
+    let cache = Cache::new(&root)
+        .and_then(|cache| cache.with_timeout(REFRESH_LIMIT))
+        .context("configuring the DN42 cache")?;
     let bundle = if cli.dn42_refresh {
         cache
             .refresh()
@@ -37,52 +46,47 @@ pub fn open(cli: &Cli) -> Result<Option<Bundle>> {
     Ok(Some(bundle))
 }
 
-#[derive(Default, Deserialize)]
-struct Extension {
-    #[serde(default)]
-    observations: Vec<Observation>,
-}
-
-#[derive(Deserialize)]
-struct Record {
-    autonomous_system_number: Option<u32>,
-    #[serde(default)]
-    dn42: Extension,
-}
-
 #[derive(Default)]
 struct Names {
     asn: Option<u32>,
     hostname: Option<String>,
 }
 
-fn names(found: IpLookup) -> Result<Names> {
+/// The origin ASN and the PTR name of `found.ip`. Each field is read on its own, so a record
+/// in another shape leaves only the fields it cannot fill empty.
+fn names(found: IpLookup) -> Names {
     let mut names = Names::default();
     for (key, matched) in found.records {
-        let record: Record = serde_json::from_value(matched.data)
-            .with_context(|| format!("reading DN42 {key} record for {}", found.ip))?;
         if key == "asn" {
-            names.asn = record.autonomous_system_number;
+            names.asn = matched
+                .data
+                .get("autonomous_system_number")
+                .and_then(Value::as_u64)
+                .and_then(|asn| u32::try_from(asn).ok());
         }
         if names.hostname.is_none() {
-            names.hostname = record.dn42.observations.iter().find_map(|observation| {
-                (observation.kind == "ptr"
-                    && observation.status == "observed"
-                    && observation
-                        .target
-                        .parse::<IpAddr>()
-                        .ok()
-                        .map(|ip| ip.to_canonical())
-                        == Some(found.ip))
-                .then_some(observation.value.as_deref())
+            names.hostname = matched
+                .data
+                .pointer("/dn42/observations")
+                .and_then(Value::as_array)
+                .into_iter()
                 .flatten()
-                .map(|name| name.trim_end_matches('.'))
-                .filter(|name| !name.is_empty())
-                .map(str::to_owned)
-            });
+                .find_map(|observation| ptr_name(observation, found.ip));
         }
     }
-    Ok(names)
+    names
+}
+
+/// The name of an observed PTR record for exactly `ip`.
+fn ptr_name(observation: &Value, ip: IpAddr) -> Option<String> {
+    let observation = Observation::deserialize(observation).ok()?;
+    let target = observation.target.parse::<IpAddr>().ok()?.to_canonical();
+    if observation.kind != "ptr" || observation.status != "observed" || target != ip {
+        return None;
+    }
+    let name = observation.value?;
+    let name = name.trim_end_matches('.');
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 pub fn annotate(
@@ -109,7 +113,7 @@ pub fn annotate(
         let found = bundle
             .lookup_ip(ip)
             .with_context(|| format!("looking up {ip} in DN42 IPDB"))?;
-        annotations.insert(ip, names(found)?);
+        annotations.insert(ip, names(found));
         progress(annotations.len(), total);
     }
     for host in routes
@@ -143,7 +147,7 @@ mod tests {
     fn reads_real_mmdb_records_for_both_families() {
         let bundle = Bundle::open(fixtures()).unwrap();
         for ip in ["172.20.0.1", "fd42:1234::1", "::ffff:172.20.0.1"] {
-            let found = names(bundle.lookup_ip(ip.parse().unwrap()).unwrap()).unwrap();
+            let found = names(bundle.lookup_ip(ip.parse().unwrap()).unwrap());
             assert_eq!(found.asn, Some(4_242_420_001), "{ip}");
             assert_eq!(
                 found.hostname.as_deref(),
@@ -152,14 +156,14 @@ mod tests {
             );
         }
         for ip in ["172.20.0.2", "fd42:1234::2"] {
-            let found = names(bundle.lookup_ip(ip.parse().unwrap()).unwrap()).unwrap();
+            let found = names(bundle.lookup_ip(ip.parse().unwrap()).unwrap());
             assert_eq!(found.asn, Some(4_242_420_001));
             assert!(
                 found.hostname.is_none(),
                 "a prefix must not inherit another host's PTR"
             );
         }
-        let absent = names(bundle.lookup_ip("203.0.113.1".parse().unwrap()).unwrap()).unwrap();
+        let absent = names(bundle.lookup_ip("203.0.113.1".parse().unwrap()).unwrap());
         assert!(absent.asn.is_none() && absent.hostname.is_none());
     }
 
@@ -227,20 +231,44 @@ mod tests {
     }
 
     #[test]
-    fn invalid_asn_record_is_an_error() {
+    fn fields_in_another_shape_stay_empty() {
+        let record = |data| Match {
+            network: "172.20.0.0/24".to_owned(),
+            prefix_length: 24,
+            data,
+        };
+        let ptr = json!({
+            "target": "172.20.0.1",
+            "kind": "ptr",
+            "value": "router.test.dn42.",
+            "status": "observed",
+            "method": "dns",
+            "source": "registry",
+            "authority": "test.dn42",
+            "observed_at": "2026-11-17T00:00:00Z",
+        });
         let found = IpLookup {
             ip: "172.20.0.1".parse().unwrap(),
-            records: [(
-                "asn".to_owned(),
-                Match {
-                    network: "172.20.0.0/24".to_owned(),
-                    prefix_length: 24,
-                    data: json!({"autonomous_system_number": "invalid"}),
-                },
-            )]
+            records: [
+                (
+                    "asn".to_owned(),
+                    record(json!({
+                        "autonomous_system_number": "invalid",
+                        "dn42": {"observations": "invalid"},
+                    })),
+                ),
+                (
+                    "city".to_owned(),
+                    record(json!({
+                        "dn42": {"observations": [{"target": "172.20.0.1", "kind": "ptr"}, ptr]},
+                    })),
+                ),
+            ]
             .into(),
         };
-        assert!(names(found).is_err());
+        let names = names(found);
+        assert_eq!(names.asn, None);
+        assert_eq!(names.hostname.as_deref(), Some("router.test.dn42"));
     }
 
     #[test]
