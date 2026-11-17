@@ -2,3 +2,8 @@
 # Ubuntu 24.04 (checked under QEMU), so big-endian PowerPC links at a fixed address.
 [target.powerpc64-unknown-linux-gnu]
 rustflags = ["-C", "relocation-model=static"]
+
+# Since Rust 1.100 windows-gnullvm asks the linker driver for a static libunwind through
+# --unwindlib, which zig cc ignores; zig builds libunwind when it is named with -lunwind.
+[target.aarch64-pc-windows-gnullvm]
+rustflags = ["-C", "link-arg=-lunwind"]
