@@ -14,6 +14,13 @@ use crate::user_dir::{self, Kind};
 /// A release is about 30 MB; the limit covers the wait for another update and every download.
 const REFRESH_LIMIT: Duration = Duration::from_secs(300);
 
+/// True for a host name under `.dn42`, which reaches DN42 and carries a certificate of the DN42 CA.
+pub fn is_dn42_name(host: &str) -> bool {
+    host.trim_end_matches('.')
+        .rsplit_once('.')
+        .is_some_and(|(name, tld)| !name.is_empty() && tld.eq_ignore_ascii_case("dn42"))
+}
+
 pub fn open(cli: &Cli) -> Result<Option<Bundle>> {
     if cli.mode != Mode::Dn42 || cli.no_rdns {
         return Ok(None);
@@ -228,6 +235,23 @@ mod tests {
             json["hops"][0]["hosts"][0]["hostname"],
             "resolver.test.dn42"
         );
+    }
+
+    #[test]
+    fn names_under_dn42_are_dn42_names() {
+        for name in ["xmtr.ip-api.dn42", "XMTR.IP-API.DN42.", "hat.dn42"] {
+            assert!(is_dn42_name(name), "{name}");
+        }
+        for name in [
+            "dn42",
+            ".dn42",
+            "dn42.example",
+            "example.dn42x",
+            "172.20.0.53",
+            "",
+        ] {
+            assert!(!is_dn42_name(name), "{name}");
+        }
     }
 
     #[test]

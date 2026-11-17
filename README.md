@@ -337,6 +337,18 @@ requests. `--no-rdns` skips annotations and does not require a database.
 `--json` prints the existing route payload, including hop ASNs and host names.
 The default mode is `internet`.
 
+Hosts that reach only DN42 can upload through the gateway at
+`https://xmtr.ip-api.dn42`, which relays the API to the public gateway:
+
+```sh
+XMTR_API=https://xmtr.ip-api.dn42 sudo -E xmtr 172.20.0.53
+```
+
+The links of uploaded traces open on IPMap at xmsl.dev on the public Internet. A
+gateway under `.dn42` must show a certificate of the DN42 root CA, which xmtr carries;
+other hosts keep the Mozilla roots. Uploads through such a gateway carry no public
+source address, because the gateway would see its own.
+
 ### DNS
 
 `--dns` selects the resolver for target names, the upload, reverse DNS and AS lookups.
@@ -397,6 +409,8 @@ Release binaries send reports to the xmtr project on [GlitchTip](https://glitcht
 | Crash | after a panic, when you answer yes | the panic message and its source location, xmtr version, OS, CPU architecture |
 
 xmtr asks about errors and crashes only when stdin and stderr are a terminal and neither `--json` nor `--quiet` is set. The default answer is no, and without a terminal nothing is sent. Before sending, xmtr replaces IP addresses with `[ip]`; the targets, a resolver or gateway given by hostname, and proxy hosts with `[host]`; the home directory with `~`; user names in paths with `[user]`; and credentials in URLs. Reports do not include the name of your machine or the command line. GlitchTip records the address a report came from, shortened to its network prefix.
+
+With `--mode dn42`, or with `--api` under `.dn42`, reports go through the DN42 gateway, `https://xmtr.ip-api.dn42` or the given one, which relays them to GlitchTip.
 
 `DO_NOT_TRACK=1` turns off every report and question ([Console Do Not Track](https://consoledonottrack.com)).
 

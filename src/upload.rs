@@ -5,6 +5,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use ureq::config::{Config, ConfigBuilder};
 use ureq::http::header::CONTENT_TYPE;
 use ureq::http::{Response, StatusCode, Uri};
+use ureq::tls::{Certificate, RootCerts, TlsConfig};
 use ureq::typestate::AgentScope;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{
@@ -13,6 +14,7 @@ use ureq::unversioned::transport::{
 use ureq::{Agent, Body};
 use url::Url;
 
+use crate::dn42::is_dn42_name;
 use crate::dns::Dns;
 use crate::model::{Problem, Upload, UploadAccepted};
 
@@ -25,6 +27,9 @@ pub mod source;
 /// Time limit for a request to the gateway.
 pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+/// The DN42 root CA. Its name constraints limit it to names under `.dn42`, 172.20.0.0/14 and
+/// fd42::/16.
+const DN42_ROOT_CA: &[u8] = include_bytes!("upload/dn42-root-ca.pem");
 
 #[cfg(test)]
 #[path = "upload/proxy_tests.rs"]
@@ -70,8 +75,21 @@ fn config_builder(timeout: Duration) -> ConfigBuilder<AgentScope> {
         .user_agent(USER_AGENT)
 }
 
-fn config(timeout: Duration) -> Config {
-    config_builder(timeout).build()
+/// Settings for requests to `uri`: a host under `.dn42` must show a certificate of the DN42 CA,
+/// every other host one of the Mozilla roots.
+fn config(timeout: Duration, uri: &Uri) -> Config {
+    let builder = config_builder(timeout);
+    if !uri.host().is_some_and(is_dn42_name) {
+        return builder.build();
+    }
+    let root = Certificate::from_pem(DN42_ROOT_CA).expect("the DN42 root CA is a PEM certificate");
+    builder
+        .tls_config(
+            TlsConfig::builder()
+                .root_certs(RootCerts::new_with_certs(&[root]))
+                .build(),
+        )
+        .build()
 }
 
 /// Connections through the SOCKS or HTTP proxy from the environment, if any, then TLS.
@@ -82,9 +100,13 @@ fn connector() -> impl Connector {
         .chain(RustlsConnector::default())
 }
 
-/// An agent that resolves with the system and connects like the upload does.
-pub fn proxied_agent(timeout: Duration) -> Agent {
-    Agent::with_parts(config(timeout), connector(), DefaultResolver::default())
+/// An agent for requests to `uri` that resolves with the system and connects like the upload does.
+pub fn proxied_agent(uri: &Uri, timeout: Duration) -> Agent {
+    Agent::with_parts(
+        config(timeout, uri),
+        connector(),
+        DefaultResolver::default(),
+    )
 }
 
 /// An agent like [`proxied_agent`] that ignores the proxy settings, for test servers on this
@@ -106,11 +128,11 @@ pub fn proxy_host() -> Option<String> {
 /// An agent for requests to the gateway at `url`, which resolves its host with `dns` and connects
 /// through the proxy from the environment, if any.
 pub fn agent(url: &str, dns: &Dns, timeout: Duration) -> Result<Agent> {
-    let config = config(timeout);
-    let connector = connector();
     let uri: Uri = url
         .parse()
         .with_context(|| format!("parsing {}", printable(url)))?;
+    let config = config(timeout, &uri);
+    let connector = connector();
     let remote_proxy = config
         .proxy()
         .is_some_and(|proxy| !proxy.is_no_proxy(&uri) && !proxy.resolve_target());
@@ -271,6 +293,37 @@ pub fn delete(agent: &Agent, api: &str, id: &str, admin_key: &str) -> Result<boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dn42_hosts_trust_only_the_dn42_root() {
+        for url in [
+            crate::cli::DN42_API,
+            "https://XMTR.IP-API.DN42.:8443/api/v1/traces",
+        ] {
+            let RootCerts::Specific(roots) = config(UPLOAD_TIMEOUT, &url.parse().unwrap())
+                .tls_config()
+                .root_certs()
+            else {
+                panic!("{url} does not use the DN42 root");
+            };
+            assert_eq!(roots.len(), 1, "{url}");
+        }
+        for url in [
+            crate::cli::DEFAULT_API,
+            "https://dn42.example",
+            "https://172.20.0.53",
+        ] {
+            assert!(
+                matches!(
+                    config(UPLOAD_TIMEOUT, &url.parse().unwrap())
+                        .tls_config()
+                        .root_certs(),
+                    RootCerts::WebPki
+                ),
+                "{url}"
+            );
+        }
+    }
 
     #[test]
     fn custom_resolver_preserves_gateway_literals_and_ports() {

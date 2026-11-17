@@ -25,8 +25,10 @@ use sentry::{
     ClientInitGuard, ClientOptions, Envelope, Transaction, TransactionContext, Transport,
     TransportOptions,
 };
+use ureq::http::Uri;
+use url::Url;
 
-use crate::cli::{self, Cli, Command, DEFAULT_API, TracesCommand};
+use crate::cli::{self, Cli, Command, DEFAULT_API, Mode, TracesCommand};
 use crate::dns::{DnsSpec, Host};
 use crate::live::Console;
 use crate::{traces, upload};
@@ -70,6 +72,38 @@ fn policy(cli: &Cli, do_not_track: bool, interactive: bool) -> Option<Policy> {
         ask: interactive,
     };
     (policy.usage || policy.ask).then_some(policy)
+}
+
+/// `dsn` at the xmtr gateway on DN42 when the run reaches the network through DN42: at the
+/// `--api` gateway under `.dn42`, or at [`cli::DN42_API`] in DN42 mode. The gateway relays the
+/// reports to the host of the DSN.
+fn through_gateway(dsn: Dsn, cli: &Cli) -> Dsn {
+    let gateway = if cli.dn42_api() {
+        cli.api.as_str()
+    } else if cli.mode == Mode::Dn42 {
+        cli::DN42_API
+    } else {
+        return dsn;
+    };
+    let gateway = Url::parse(gateway).expect("a gateway under .dn42 is a URL");
+    let key = match dsn.secret_key() {
+        Some(secret) => format!("{}:{secret}", dsn.public_key()),
+        None => dsn.public_key().to_owned(),
+    };
+    let port = gateway
+        .port()
+        .map_or_else(String::new, |port| format!(":{port}"));
+    format!(
+        "{}://{key}@{}{port}{}{}",
+        gateway.scheme(),
+        gateway
+            .host_str()
+            .expect("a gateway under .dn42 has a host"),
+        dsn.path(),
+        dsn.project_id()
+    )
+    .parse()
+    .expect("the DSN at the gateway is a valid DSN")
 }
 
 /// The name of the run in usage reports.
@@ -425,7 +459,7 @@ impl Telemetry {
         let opted_out = do_not_track(env::var("DO_NOT_TRACK").ok().as_deref());
         Self(
             policy(cli, opted_out, interactive)
-                .map(|policy| Active::start(cli, console, policy, dsn)),
+                .map(|policy| Active::start(cli, console, policy, through_gateway(dsn, cli))),
         )
     }
 
@@ -471,12 +505,20 @@ impl Active {
             .traces_sample_rate(if sampled { 1.0 } else { 0.0 });
         options.dsn = Some(dsn);
         options.release = sentry::release_name!();
+        let endpoint: Uri = options
+            .dsn
+            .as_ref()
+            .expect("the options hold a DSN")
+            .envelope_api_url()
+            .as_str()
+            .parse()
+            .expect("a DSN gives an envelope URL");
         let transport =
             TransportOptions::try_from_client_options(&options).expect("the options hold a DSN");
         let gate = Arc::new(Gate {
             inner: Box::new(
                 UreqHttpTransportOptions::from(transport)
-                    .with_agent(upload::proxied_agent(SEND_TIMEOUT))
+                    .with_agent(upload::proxied_agent(&endpoint, SEND_TIMEOUT))
                     .build(),
             ),
             held: Mutex::new(Vec::new()),
@@ -556,6 +598,31 @@ mod tests {
         for off in [None, Some(""), Some("0"), Some("false"), Some("FALSE")] {
             assert!(!do_not_track(off), "{off:?}");
         }
+    }
+
+    #[test]
+    fn reports_go_through_the_dn42_gateway_when_the_run_uses_dn42() {
+        let dsn: Dsn = "https://public@api-user.xmsl.dev/5".parse().unwrap();
+        let endpoint = |args: &[&str]| {
+            through_gateway(dsn.clone(), &cli(args))
+                .envelope_api_url()
+                .to_string()
+        };
+        assert_eq!(
+            endpoint(&["1.1.1.1"]),
+            "https://api-user.xmsl.dev/api/5/envelope/"
+        );
+        assert_eq!(
+            endpoint(&["--mode", "dn42", "172.20.0.53"]),
+            "https://xmtr.ip-api.dn42/api/5/envelope/"
+        );
+        assert_eq!(
+            endpoint(&["--api", "http://XMTR.ip-api.dn42:8080", "172.20.0.53"]),
+            "http://xmtr.ip-api.dn42:8080/api/5/envelope/"
+        );
+        let relayed = through_gateway(dsn.clone(), &cli(&["--mode", "dn42", "172.20.0.53"]));
+        assert_eq!(relayed.public_key(), "public");
+        assert_eq!(relayed.project_id(), dsn.project_id());
     }
 
     #[test]
