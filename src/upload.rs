@@ -202,6 +202,35 @@ fn printable_accepted(accepted: UploadAccepted) -> UploadAccepted {
     }
 }
 
+/// `accepted` with its delete URL on the gateway at `api`, the one the upload went through. The
+/// gateway names its own address there, which a host that reaches it through another one, such as
+/// the gateway on DN42, cannot reach.
+fn deleted_through(accepted: UploadAccepted, api: &str) -> Result<UploadAccepted> {
+    let admin_api_url = match &accepted.admin_key {
+        Some(key) => {
+            let mut url = trace_url(api, &accepted.id)?;
+            url.query_pairs_mut().append_pair("admin-key", key);
+            Some(url.into())
+        }
+        None => None,
+    };
+    Ok(UploadAccepted {
+        admin_api_url,
+        ..accepted
+    })
+}
+
+/// The URL of trace `id` on the gateway at `api`.
+fn trace_url(api: &str, id: &str) -> Result<Url> {
+    let mut url = Url::parse(api)
+        .with_context(|| format!("reading the gateway address {}", printable(api)))?;
+    url.path_segments_mut()
+        .map_err(|()| anyhow!("the gateway address {} cannot hold a path", printable(api)))?
+        .pop_if_empty()
+        .extend(["api", "v1", "traces", id]);
+    Ok(url)
+}
+
 /// Sends the routes to the gateway and returns the stored trace ID, view key, IPMap link and, from
 /// gateways that support deletion, the admin key with its links.
 pub fn upload(api: &str, body: &Upload, dns: &Dns) -> Result<UploadAccepted> {
@@ -225,7 +254,7 @@ fn upload_with_timeout(
             .body_mut()
             .read_json::<UploadAccepted>()
             .context("reading upload response")?;
-        return Ok(printable_accepted(accepted));
+        return deleted_through(printable_accepted(accepted), api);
     }
     bail!(
         "upload rejected with HTTP {}: {}",
@@ -268,12 +297,7 @@ fn is_problem(response: &Response<Body>) -> bool {
 /// comes from another server, such as one `--api` names by mistake, and says nothing about the
 /// trace.
 pub fn delete(agent: &Agent, api: &str, id: &str, admin_key: &str) -> Result<bool> {
-    let mut url = Url::parse(api)
-        .with_context(|| format!("reading the gateway address {}", printable(api)))?;
-    url.path_segments_mut()
-        .map_err(|()| anyhow!("the gateway address {} cannot hold a path", printable(api)))?
-        .pop_if_empty()
-        .extend(["api", "v1", "traces", id]);
+    let url = trace_url(api, id)?;
     let mut response = agent
         .delete(url.as_str())
         .header("X-Trace-Admin-Key", admin_key)
@@ -353,6 +377,36 @@ mod tests {
             printable("https://xmsl.dev/ipmap?trace-id=1"),
             "https://xmsl.dev/ipmap?trace-id=1"
         );
+    }
+
+    #[test]
+    fn the_delete_url_names_the_gateway_the_upload_went_through() {
+        const ID: &str = "116401230717501440-YhSHeoZD";
+        let accepted = |admin_key: Option<&str>| UploadAccepted {
+            id: ID.to_owned(),
+            pin: false,
+            url: format!("https://xmsl.dev/xmtr/{ID}"),
+            admin_key: admin_key.map(str::to_owned),
+            admin_url: None,
+            admin_api_url: Some(format!(
+                "https://stage-info-api.xmsl.dev/api/v1/traces/{ID}?admin-key=k"
+            )),
+        };
+        for (api, gateway) in [
+            (crate::cli::DN42_API, "https://xmtr.ip-api.dn42"),
+            ("http://xmtr.ip-api.dn42/", "http://xmtr.ip-api.dn42"),
+            (
+                "https://gw.example.dn42/xmtr",
+                "https://gw.example.dn42/xmtr",
+            ),
+        ] {
+            let through = deleted_through(accepted(Some("1b4e28ba")), api).unwrap();
+            let expected = format!("{gateway}/api/v1/traces/{ID}?admin-key=1b4e28ba");
+            assert_eq!(through.admin_api_url, Some(expected), "{api}");
+            assert!(through.delete_command().is_some(), "{api}");
+        }
+        let without_key = deleted_through(accepted(None), crate::cli::DN42_API).unwrap();
+        assert_eq!(without_key.admin_api_url, None);
     }
 
     #[test]
