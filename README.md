@@ -281,7 +281,7 @@ The upload carries the source address, the destination and a target given as an 
 
 ### Delete an upload
 
-The upload also returns an admin key, a random UUID, and two links that carry it: the admin link opens the trace in IPMap with the key, and the gateway URL in the delete command deletes the trace.
+The upload also returns an admin key, a random UUID, and two links that carry it: the admin link opens the trace in IPMap with the key, and the gateway URL in the delete command deletes the trace. The command names the gateway the upload went through, `--api` or `XMTR_API`, so after an upload through `https://xmtr.ip-api.dn42` it runs on the same DN42 host.
 
 ```sh
 curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/<trace ID>?admin-key=<admin key>'

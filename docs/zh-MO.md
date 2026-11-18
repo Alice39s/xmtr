@@ -281,7 +281,7 @@ IPMap 把探測包離開時的公網地址作為每條路由的起點。如果�
 
 ### 刪除上傳記錄
 
-上傳還會返回一個 admin key（隨機生成的 UUID）和兩個帶着它的鏈接：管理鏈接在 IPMap 裏用這個 key 打開記錄，刪除命令裏的網關地址用來刪除記錄。
+上傳還會返回一個 admin key（隨機生成的 UUID）和兩個帶着它的鏈接：管理鏈接在 IPMap 裏用這個 key 打開記錄，刪除命令裏的網關地址用來刪除記錄。刪除命令指向這次上傳經過的網關（`--api` 或 `XMTR_API`），所以經 `https://xmtr.ip-api.dn42` 上傳後，在同一台 DN42 主機上也能執行。
 
 ```sh
 curl -X DELETE 'https://stage-info-api.xmsl.dev/api/v1/traces/<trace ID>?admin-key=<admin key>'
