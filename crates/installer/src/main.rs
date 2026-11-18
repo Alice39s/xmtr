@@ -3,10 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow};
 use xmtr_release::{
     TARGET, agent, ensure_writable, exe_name, fetch_binary, latest_tag, normalize_tag,
-    releases_url, write_staged,
+    releases_url, replace_file,
 };
 
 const USAGE: &str = "\
@@ -101,14 +101,14 @@ fn install(options: &Options) -> Result<PathBuf> {
     eprintln!("xmtr {tag} for {TARGET} from {}", releases_url());
     let binary = fetch_binary(&agent, &tag)?;
     let destination = dir.join(exe_name());
-    let staged = write_staged(&destination, &binary)?;
-    if let Err(error) = fs::rename(&staged, &destination) {
-        let _ = fs::remove_file(&staged);
-        bail!(
-            "replacing {}: {error} (close running xmtr processes, or use `xmtr self update`)",
-            destination.display()
-        );
-    }
+    replace_file(&destination, &binary).map_err(|error| {
+        // Windows refuses to replace a running binary; Unix renames over it.
+        if cfg!(windows) {
+            anyhow!("{error:#} (close running xmtr processes, or use `xmtr self update`)")
+        } else {
+            error
+        }
+    })?;
     Ok(destination)
 }
 

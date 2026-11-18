@@ -122,7 +122,7 @@ xmtr self update --tag v0.3.3 # install a given release instead
 xmtr self uninstall           # delete this binary
 ```
 
-`--force` reinstalls a release that is already installed. Update packages from a package manager or a Linux repository with that manager instead.
+`--force` reinstalls a release that is already installed. Update packages from a package manager or a Linux repository with that manager instead. On Unix the new binary keeps the permissions of the one it replaces, and an update run as root also keeps its owner and group, so after `sudo xmtr self update` a binary that belongs to another user, such as the Termux app, still runs for that user.
 
 After a run in a terminal, xmtr looks up the latest release, waiting at most 3 seconds. When it is newer, xmtr asks whether to install it and then whether to run the same command again with the new version; Enter answers yes to both. When a package manager owns the binary, or its directory is not writable, xmtr prints the command that updates it instead. Runs with `--json`, `--quiet`, `--no-upload` or `--mode dn42`, and runs without a terminal on stdin and stderr, skip the lookup.
 

@@ -1,12 +1,9 @@
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ureq::Agent;
-use xmtr_release::{
-    ensure_writable, fetch_binary, is_newer, latest_tag, normalize_tag, write_staged,
-};
+use xmtr_release::{ensure_writable, fetch_binary, is_newer, latest_tag, normalize_tag};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const RIGHTS_HINT: &str = "run the update with the rights that installed it";
@@ -36,12 +33,30 @@ pub fn newer_release() -> Result<Option<String>> {
 
 /// Replaces the running binary, found at `exe`, with release `tag`.
 pub fn install(exe: &Path, tag: &str) -> Result<()> {
+    // Unix replaces the file a symlinked path points to; Windows replaces the running binary itself.
+    #[cfg(unix)]
+    let exe = &exe
+        .canonicalize()
+        .with_context(|| format!("resolving {}", exe.display()))?;
     check_writable(exe)?;
     let binary = fetch_binary(&agent(), tag)?;
-    let staged = write_staged(exe, &binary)?;
+    replace_running(exe, &binary)
+        .with_context(|| format!("updating {}; {RIGHTS_HINT}", exe.display()))
+}
+
+/// Unix lets a file be renamed over a running binary, so the new binary goes straight into place. It
+/// keeps the mode of the old one, and run as root also its owner and group.
+#[cfg(unix)]
+fn replace_running(exe: &Path, binary: &[u8]) -> Result<()> {
+    xmtr_release::replace_file(exe, binary)
+}
+
+#[cfg(not(unix))]
+fn replace_running(exe: &Path, binary: &[u8]) -> Result<()> {
+    let staged = xmtr_release::write_staged(exe, binary)?;
     let replaced = self_replace::self_replace(&staged);
-    let _ = fs::remove_file(&staged);
-    replaced.with_context(|| format!("replacing {}; {RIGHTS_HINT}", exe.display()))
+    let _ = std::fs::remove_file(&staged);
+    Ok(replaced?)
 }
 
 /// The command that grants raw sockets again after the binary was replaced, on systems that grant
@@ -93,7 +108,7 @@ pub fn uninstall() -> Result<()> {
 /// True when `dir` contains nothing but `exe`, so its PATH entry served only xmtr.
 #[cfg(windows)]
 fn only_holds(dir: &std::path::Path, exe: &std::path::Path) -> Result<bool> {
-    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         if entry?.path() != exe {
             return Ok(false);
         }

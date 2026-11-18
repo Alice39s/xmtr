@@ -221,6 +221,30 @@ pub fn fetch_binary(agent: &Agent, tag: &str) -> Result<Vec<u8>> {
 /// Writes `bytes` to a new executable file next to `destination` and returns its path. The file name is
 /// unique and must not exist yet, the data is flushed to disk, and a partial file is removed on error.
 pub fn write_staged(destination: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    stage(destination, bytes, None)
+}
+
+/// Replaces `destination` with `bytes` by renaming a staged file from the same directory over it.
+/// On Unix the new file takes the mode of the regular file it replaces and, written by root, also its
+/// owner and group, so a binary updated through `sudo` stays usable by the account that owns it.
+pub fn replace_file(destination: &Path, bytes: &[u8]) -> Result<()> {
+    let previous = match fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata.is_file().then_some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", destination.display()));
+        }
+    };
+    let staged = stage(destination, bytes, previous.as_ref())?;
+    if let Err(error) = fs::rename(&staged, destination) {
+        let _ = fs::remove_file(&staged);
+        return Err(error).with_context(|| format!("replacing {}", destination.display()));
+    }
+    Ok(())
+}
+
+/// Writes the staged file for `destination`; `previous` is the file it will replace.
+fn stage(destination: &Path, bytes: &[u8], previous: Option<&fs::Metadata>) -> Result<PathBuf> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.subsec_nanos());
@@ -235,15 +259,63 @@ pub fn write_staged(destination: &Path, bytes: &[u8]) -> Result<PathBuf> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o755);
     }
-    let written = options.open(&staged).and_then(|mut file| {
-        file.write_all(bytes)?;
-        file.sync_all()
-    });
-    if let Err(error) = written {
+    let mut file = options
+        .open(&staged)
+        .with_context(|| format!("creating {}", staged.display()))?;
+    let filled = fill(&mut file, bytes, previous);
+    drop(file);
+    if let Err(error) = filled {
         let _ = fs::remove_file(&staged);
         return Err(error).with_context(|| format!("writing {}", staged.display()));
     }
     Ok(staged)
+}
+
+fn fill(file: &mut fs::File, bytes: &[u8], previous: Option<&fs::Metadata>) -> Result<()> {
+    file.write_all(bytes)?;
+    if let Some(previous) = previous {
+        take_attributes(file, previous)?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Gives `file` the mode of `previous` and, when it was created by root, also its owner and group.
+/// The owner goes first because changing it clears the setuid and setgid bits.
+#[cfg(unix)]
+fn take_attributes(file: &fs::File, previous: &fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, fchown};
+    let current = file.metadata()?;
+    let (owner, mode) = attributes(
+        (current.uid(), current.gid()),
+        (previous.uid(), previous.gid()),
+        previous.mode(),
+    );
+    if let Some((uid, gid)) = owner {
+        fchown(file, Some(uid), Some(gid))
+            .with_context(|| format!("setting the owner to {uid}:{gid}"))?;
+    }
+    file.set_permissions(fs::Permissions::from_mode(mode))
+        .with_context(|| format!("setting the mode to {mode:o}"))
+}
+
+/// The owner to set on a staged file owned by `staged` that replaces a file owned by `previous`
+/// with `mode`, and the mode to give it. Only root hands a file to another account; any other
+/// account keeps the new file. The setuid and setgid bits stay only when the file keeps both its
+/// owner and group, because whoever owns the file can rewrite it.
+#[cfg(unix)]
+fn attributes(staged: (u32, u32), previous: (u32, u32), mode: u32) -> (Option<(u32, u32)>, u32) {
+    let owner = if staged.0 == 0 { previous } else { staged };
+    let mut mode = mode & 0o7777;
+    if owner != previous {
+        mode &= !0o6000;
+    }
+    ((owner != staged).then_some(owner), mode)
+}
+
+#[cfg(not(unix))]
+fn take_attributes(_file: &fs::File, _previous: &fs::Metadata) -> Result<()> {
+    Ok(())
 }
 
 /// Fails early, before any download, when files cannot be created in `dir`.
@@ -373,6 +445,56 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(fs::read(&first).unwrap(), b"one");
         ensure_writable(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_hands_the_file_back_and_others_keep_it() {
+        // Same owner: the mode is copied, special bits included.
+        assert_eq!(attributes((501, 20), (501, 20), 0o104755), (None, 0o4755));
+        // Root replaces a Termux binary: it goes back to the app account.
+        assert_eq!(
+            attributes((0, 0), (10306, 10306), 0o100700),
+            (Some((10306, 10306)), 0o700)
+        );
+        assert_eq!(attributes((0, 0), (0, 0), 0o104755), (None, 0o4755));
+        // A user replaces a root-owned binary in a directory it may write: the user keeps the file,
+        // which loses the setuid and setgid bits.
+        assert_eq!(attributes((501, 20), (0, 0), 0o106755), (None, 0o755));
+        // Run through a setgid root binary, the user still owns the new file.
+        assert_eq!(attributes((501, 0), (0, 0), 0o102755), (None, 0o755));
+        // Group inherited from the directory.
+        assert_eq!(attributes((501, 80), (501, 20), 0o106755), (None, 0o755));
+    }
+
+    /// Run as root, the old file belongs to another account, the way a Termux binary belongs to the
+    /// app while `sudo xmtr self update` runs as root, and the setuid bit checks that the mode is set
+    /// after the owner, whose change clears it. Run as another user, the file stays with that user.
+    #[cfg(unix)]
+    #[test]
+    fn replacing_keeps_the_owner_group_and_mode() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
+        let dir = Path::new(env!("OUT_DIR")).join(format!("replace-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let destination = dir.join("xmtr");
+        replace_file(&destination, b"old").unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"old");
+        if fs::metadata(&destination).unwrap().uid() == 0 {
+            chown(&destination, Some(10306), Some(10306)).unwrap();
+        }
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o4710)).unwrap();
+        let before = fs::metadata(&destination).unwrap();
+
+        replace_file(&destination, b"new").unwrap();
+        let after = fs::metadata(&destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new");
+        assert_ne!(after.ino(), before.ino());
+        assert_eq!(
+            (after.uid(), after.gid(), after.mode()),
+            (before.uid(), before.gid(), before.mode())
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(&dir).unwrap();
     }
 
